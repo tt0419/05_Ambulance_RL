@@ -29,6 +29,16 @@ except ImportError:
     print("警告: ServiceTimeGeneratorEnhancedが見つかりません。従来版を使用します。")
     USE_ENHANCED_GENERATOR = False
 
+# ディスパッチ戦略のインポート
+from dispatch_strategies import (
+    DispatchStrategy, 
+    StrategyFactory,
+    EmergencyRequest,
+    AmbulanceInfo,
+    DispatchContext,
+    DispatchPriority
+)
+
 plt.rcParams['font.family'] = 'Meiryo'
 plt.rcParams['font.size'] = 14  # デフォルトフォントサイズを大きく設定
 plt.rcParams['axes.titlesize'] = 18  # タイトルのフォントサイズ
@@ -397,7 +407,9 @@ class ValidationSimulator:
                  hospital_h3_indices: List[str],
                  hospital_data: Optional[pd.DataFrame] = None,
                  use_probabilistic_selection: bool = True,  # 軽症・中等症・死亡の確率的選択制御
-                 enable_breaks: bool = True):  # 休憩機能の有効/無効を追加
+                 enable_breaks: bool = True,  # 休憩機能の有効/無効を追加
+                 dispatch_strategy: str = 'closest',  # 追加
+                 strategy_config: Dict = None):  # 追加
         
         self.travel_time_matrices = travel_time_matrices
         self.travel_distance_matrices = travel_distance_matrices  # 移動距離行列を追加
@@ -505,6 +517,17 @@ class ValidationSimulator:
         self.tertiary_hospitals = set()  # 3次救急医療機関
         self.secondary_primary_hospitals = set()  # 2次以下の医療機関
         self._classify_hospitals()
+        
+        # ディスパッチ戦略の初期化を追加
+        self.dispatch_strategy = StrategyFactory.create_strategy(
+            dispatch_strategy, 
+            strategy_config or {}
+        )
+        
+        # コンテキスト情報の初期化を追加
+        self.dispatch_context = DispatchContext()
+        self.dispatch_context.grid_mapping = self.grid_mapping
+        self.dispatch_context.all_h3_indices = set(grid_mapping.keys())
         
         # 確率的病院選択モデルの初期化（軽症・中等症・死亡のみ、病院データ処理後に追加）
         self.use_probabilistic_selection = use_probabilistic_selection
@@ -1042,8 +1065,18 @@ class ValidationSimulator:
                 print(f"利用可能な距離行列: {list(self.travel_distance_matrices.keys())}")
             return 0.0  # デフォルト値
     
-    def find_closest_available_ambulance(self, call_h3: str) -> Optional[Ambulance]:
-        """最も近い利用可能な救急車を検索（休憩中を除外）"""
+    def find_closest_available_ambulance(self, call_h3: str, severity: str = None) -> Optional[Ambulance]:
+        """
+        ディスパッチ戦略を使用して最適な救急車を選択
+        
+        Args:
+            call_h3: 事案発生地点のH3インデックス
+            severity: 傷病度（オプション）
+        
+        Returns:
+            選択された救急車オブジェクト、またはNone
+        """
+        # 利用可能な救急車を取得（休憩中を除外）
         available_ambulances = [
             amb for amb in self.ambulances.values() 
             if amb.status == AmbulanceStatus.AVAILABLE and not amb.is_on_break
@@ -1054,19 +1087,64 @@ class ValidationSimulator:
                 print(f"[INFO] No available ambulances for call at {call_h3} at time {self.current_time:.2f}")
             return None
         
-        min_time = float('inf')
-        closest_ambulance = None
+        # AmbulanceInfoオブジェクトのリストを作成
+        ambulance_infos = []
+        for amb in available_ambulances:
+            amb_info = AmbulanceInfo(
+                id=amb.id,
+                current_h3=amb.current_h3_index,
+                station_h3=amb.station_h3_index,
+                status=amb.status.value,
+                total_calls_today=amb.num_calls_handled,
+                current_workload=0.0  # 必要に応じて計算
+            )
+            ambulance_infos.append(amb_info)
         
-        for ambulance in available_ambulances:
-            travel_time = self.get_travel_time(ambulance.current_h3_index, call_h3, phase='response')
-            if travel_time < min_time:
-                min_time = travel_time
-                closest_ambulance = ambulance
+        # EmergencyRequestオブジェクトを作成
+        priority = self.dispatch_strategy.get_severity_priority(severity) if severity else DispatchPriority.LOW
+        request = EmergencyRequest(
+            id=f"temp_{self.current_time}",  # 仮ID
+            h3_index=call_h3,
+            severity=severity or "その他",
+            time=self.current_time,
+            priority=priority
+        )
         
-        if closest_ambulance and self.verbose_logging:
-            print(f"[INFO] Call at {call_h3}: Closest ambulance {closest_ambulance.id} found at {closest_ambulance.current_h3_index}. Est. travel time: {min_time:.2f}s.")
-
-        return closest_ambulance
+        # DispatchContextを更新
+        self.dispatch_context.current_time = self.current_time
+        self.dispatch_context.hour_of_day = int((self.current_time / 3600) % 24)
+        self.dispatch_context.total_ambulances = len(self.ambulances)
+        self.dispatch_context.available_ambulances = len(available_ambulances)
+        
+        # 戦略を使用して救急車を選択
+        selected_info = self.dispatch_strategy.select_ambulance(
+            request=request,
+            available_ambulances=ambulance_infos,
+            travel_time_func=self.get_travel_time,
+            context=self.dispatch_context
+        )
+        
+        if selected_info:
+            # AmbulanceInfoからAmbulanceオブジェクトを取得
+            selected_ambulance = next(
+                (amb for amb in available_ambulances if amb.id == selected_info.id),
+                None
+            )
+            
+            if selected_ambulance and self.verbose_logging:
+                travel_time = self.get_travel_time(
+                    selected_ambulance.current_h3_index, 
+                    call_h3, 
+                    phase='response'
+                )
+                print(f"[INFO] Call at {call_h3} (severity: {severity}): "
+                      f"Selected ambulance {selected_ambulance.id} at {selected_ambulance.current_h3_index}. "
+                      f"Est. travel time: {travel_time:.2f}s. "
+                      f"Strategy: {self.dispatch_strategy.name}")
+            
+            return selected_ambulance
+        
+        return None
     
     def _select_hospital_deterministic(self, incident_h3: str, severity: str) -> Optional[str]:
         """決定論的な病院選択"""
@@ -1386,7 +1464,8 @@ class ValidationSimulator:
         hour = int(event.time // 3600) % 24
         self.statistics['calls_by_hour'][hour] += 1
         
-        ambulance = self.find_closest_available_ambulance(call.h3_index)
+        # 傷病度を渡すように修正
+        ambulance = self.find_closest_available_ambulance(call.h3_index, call.severity)
         
         if ambulance:
             ambulance.status = AmbulanceStatus.DISPATCHED
@@ -2682,7 +2761,9 @@ def run_validation_simulation(
     verbose_logging: bool = False,
     enable_detailed_travel_time_analysis: bool = False,
     use_probabilistic_selection: bool = True,  # 軽症・中等症・死亡に確率的選択を適用
-    enable_breaks: bool = True  # 休憩機能の有効/無効を追加
+    enable_breaks: bool = False,  # 休憩機能の有効/無効を追加
+    dispatch_strategy: str = 'closest',  # 追加
+    strategy_config: Dict = None  # 追加
 ) -> None:
     """
     検証用シミュレーションを実行
@@ -2862,7 +2943,10 @@ def run_validation_simulation(
         service_time_generator=service_time_generator,
         hospital_h3_indices=hospital_h3_indices,
         hospital_data=hospital_data,
-        use_probabilistic_selection=use_probabilistic_selection  # 軽症・中等症の確率的選択制御
+        use_probabilistic_selection=use_probabilistic_selection,  # 軽症・中等症の確率的選択制御
+        enable_breaks=enable_breaks,
+        dispatch_strategy=dispatch_strategy,  # 追加
+        strategy_config=strategy_config  # 追加
     )
     
     # 出力ディレクトリの設定と分析機能の有効化
@@ -2954,6 +3038,17 @@ if __name__ == "__main__":
    # 確率的選択を有効にするかどうかのフラグ（軽症・中等症・死亡のみ適用）
    use_probabilistic_hospital_selection = True  # True: 軽症・中等症・死亡に確率的選択, False: 全て決定論的選択
 
+   # --- ディスパッチ戦略の設定 ---
+   # dispatch_strategy = 'closest'  # 従来の最寄り戦略
+   dispatch_strategy = 'severity_based'  # 新しい傷病度考慮戦略
+   
+   # 戦略固有の設定（オプション）
+   strategy_config = {
+       'coverage_radius_km': 5.0,
+       'severe_conditions': ['重症', '重篤', '死亡'],
+       'mild_conditions': ['軽症', '中等症']
+   }
+
    # --- 救急隊の初期活動状態に関する設定 ---
    # シミュレーション開始時に活動中とする救急隊の割合の範囲 (例: 40%～60%)
    # 0.0に設定すると、全ての隊が待機状態から開始
@@ -2992,5 +3087,7 @@ if __name__ == "__main__":
        verbose_logging=enable_verbose_logging,
        enable_detailed_travel_time_analysis=enable_travel_time_analysis,
        use_probabilistic_selection=use_probabilistic_hospital_selection,  # 軽症・中等症・死亡の確率的選択制御
-       enable_breaks=False  # 休憩機能の有効化
+       enable_breaks=False,  # 休憩機能の有効化
+       dispatch_strategy=dispatch_strategy,
+       strategy_config=strategy_config
    )
