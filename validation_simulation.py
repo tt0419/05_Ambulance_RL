@@ -36,7 +36,8 @@ from dispatch_strategies import (
     EmergencyRequest,
     AmbulanceInfo,
     DispatchContext,
-    DispatchPriority
+    DispatchPriority,
+    STRATEGY_CONFIGS
 )
 
 plt.rcParams['font.family'] = 'Meiryo'
@@ -3040,14 +3041,23 @@ if __name__ == "__main__":
 
    # --- ディスパッチ戦略の設定 ---
    # dispatch_strategy = 'closest'  # 従来の最寄り戦略
-   dispatch_strategy = 'severity_based'  # 新しい傷病度考慮戦略
+   # dispatch_strategy = 'severity_based'  # 基本的な傷病度考慮戦略
+   dispatch_strategy = 'advanced_severity'  # 高度な傷病度考慮戦略
    
-   # 戦略固有の設定（オプション）
-   strategy_config = {
-       'coverage_radius_km': 5.0,
-       'severe_conditions': ['重症', '重篤', '死亡'],
-       'mild_conditions': ['軽症', '中等症']
-   }
+   # 戦略固有の設定
+   strategy_config = {}
+   if dispatch_strategy == 'advanced_severity':
+        # 設定プリセットから選択
+        strategy_config = STRATEGY_CONFIGS['extreme']  # 'conservative', 'aggressive','extreme' から選択
+        
+        # または個別にカスタマイズ
+        # strategy_config = {
+        #     'mild_time_limit': 1080,        # 軽症の制限時間（秒）
+        #     'mild_delay_threshold': 600,    # 軽症が優先する最小時間
+        #     'moderate_time_limit': 900,     # 中等症の制限時間
+        #     'high_utilization': 0.65,       # 繁忙期判定閾値
+        #     'critical_utilization': 0.80,   # 緊急モード閾値
+        # }
 
    # --- 救急隊の初期活動状態に関する設定 ---
    # シミュレーション開始時に活動中とする救急隊の割合の範囲 (例: 40%～60%)

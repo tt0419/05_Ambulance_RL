@@ -1,6 +1,12 @@
 """
 baseline_comparison.py
-直近隊運用 vs 傷病度考慮運用の比較実験
+複数ディスパッチ戦略の比較実験システム
+
+【設定変更ガイド】
+1. 戦略の追加・削除: EXPERIMENT_CONFIG の strategies リストを編集
+2. 戦略設定の変更: strategy_configs 辞書を編集
+3. 戦略ラベルの変更: strategy_labels 辞書を編集
+4. 色の変更: strategy_colors 辞書を編集
 """
 
 import os
@@ -11,10 +17,47 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Dict, List
+from scipy import stats
 
 # 日本語フォント設定
 plt.rcParams['font.family'] = 'Meiryo'
 plt.rcParams['font.size'] = 12
+
+# ディスパッチ戦略のインポート
+from dispatch_strategies import STRATEGY_CONFIGS
+
+# ============================================================
+# 【設定変更箇所1】実験設定
+# ============================================================
+EXPERIMENT_CONFIG = {
+    # 比較する戦略のリスト（ここで戦略を追加・削除）
+    'strategies': ['closest', 'severity_based', 'advanced_severity'],
+    
+    # 各戦略の日本語表示名
+    'strategy_labels': {
+        'closest': '直近隊運用',
+        'severity_based': '傷病度考慮運用',
+        'advanced_severity': '高度傷病度考慮運用'
+    },
+    
+    # 各戦略の色設定
+    'strategy_colors': {
+        'closest': '#3498db',        # 青
+        'severity_based': '#e74c3c',  # 赤
+        'advanced_severity': '#2ecc71' # 緑
+    },
+    
+    # 各戦略の設定（STRATEGY_CONFIGSから選択またはカスタム設定）
+    'strategy_configs': {
+        'closest': {},  # デフォルト設定
+        'severity_based': {
+            'coverage_radius_km': 5.0,
+            'severe_conditions': ['重症', '重篤', '死亡'],
+            'mild_conditions': ['軽症', '中等症']
+        },
+        'advanced_severity': STRATEGY_CONFIGS['aggressive']  # 推奨設定
+    }
+}
 
 def run_comparison_experiment(
     target_date: str,
@@ -23,7 +66,7 @@ def run_comparison_experiment(
     output_base_dir: str = 'data/tokyo/experiments'
 ):
     """
-    両戦略の比較実験を実行
+    複数戦略の比較実験を実行
     
     Args:
         target_date: シミュレーション開始日（YYYYMMDD形式）
@@ -35,22 +78,22 @@ def run_comparison_experiment(
     # validation_simulation.pyのrun_validation_simulation関数をインポート
     from validation_simulation import run_validation_simulation
     
-    # 実験結果格納用
-    results = {
-        'closest': [],
-        'severity_based': []
-    }
+    # 設定から戦略リストを取得
+    strategies = EXPERIMENT_CONFIG['strategies']
+    strategy_configs = EXPERIMENT_CONFIG['strategy_configs']
     
-    strategies = ['closest', 'severity_based']
+    # 実験結果格納用（動的に初期化）
+    results = {strategy: [] for strategy in strategies}
     
     print("=" * 60)
     print("ディスパッチ戦略比較実験")
     print(f"対象期間: {target_date} から {duration_hours}時間")
     print(f"実行回数: 各戦略 {num_runs}回")
+    print(f"比較戦略: {', '.join([EXPERIMENT_CONFIG['strategy_labels'][s] for s in strategies])}")
     print("=" * 60)
     
     for strategy in strategies:
-        print(f"\n戦略: {strategy}")
+        print(f"\n戦略: {EXPERIMENT_CONFIG['strategy_labels'][strategy]} ({strategy})")
         print("-" * 40)
         
         for run_idx in range(num_runs):
@@ -71,11 +114,7 @@ def run_comparison_experiment(
                 random_seed=42 + run_idx,  # 各実行で異なるシード
                 verbose_logging=False,
                 dispatch_strategy=strategy,
-                strategy_config={} if strategy == 'closest' else {
-                    'coverage_radius_km': 5.0,
-                    'severe_conditions': ['重症', '重篤', '死亡'],
-                    'mild_conditions': ['軽症', '中等症']
-                }
+                strategy_config=strategy_configs[strategy]
             )
             
             # 結果の読み込み
@@ -101,7 +140,7 @@ def run_comparison_experiment(
 
 def analyze_results(results: Dict[str, List]) -> Dict:
     """
-    実験結果を分析
+    実験結果を分析（複数戦略対応）
     
     Returns:
         分析結果の辞書
@@ -200,24 +239,38 @@ def analyze_results(results: Dict[str, List]) -> Dict:
 
 def visualize_comparison(analysis: Dict, output_dir: str):
     """
-    比較結果の可視化
+    比較結果の可視化（複数戦略対応）
     """
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-    fig.suptitle('ディスパッチ戦略比較: 直近隊 vs 傷病度考慮', fontsize=16)
+    strategies = EXPERIMENT_CONFIG['strategies']
+    strategy_labels = EXPERIMENT_CONFIG['strategy_labels']
+    strategy_colors = EXPERIMENT_CONFIG['strategy_colors']
     
-    strategies = ['closest', 'severity_based']
-    strategy_labels = {'closest': '直近隊', 'severity_based': '傷病度考慮'}
-    colors = {'closest': '#3498db', 'severity_based': '#e74c3c'}
+    # 戦略数に応じてレイアウトを調整
+    num_strategies = len(strategies)
+    
+    if num_strategies <= 3:
+        # 3つ以下の場合：2行3列のレイアウト（基本6個のグラフ）
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        axes = axes.flatten()
+        max_plots = 6  # 最大6個のサブプロット
+    else:
+        # 4つ以上の場合：3行3列のレイアウト
+        fig, axes = plt.subplots(3, 3, figsize=(18, 18))
+        axes = axes.flatten()
+        max_plots = 9  # 最大9個のサブプロット
+    
+    fig.suptitle(f'ディスパッチ戦略比較: {len(strategies)}戦略', fontsize=16)
+    
+    x_pos = np.arange(len(strategies))
     
     # 1. 全体平均応答時間
-    ax = axes[0, 0]
+    ax = axes[0]
     means = [analysis[s]['response_time_overall']['mean'] for s in strategies]
     stds = [analysis[s]['response_time_overall']['std'] for s in strategies]
-    x_pos = np.arange(len(strategies))
     bars = ax.bar(x_pos, means, yerr=stds, capsize=5, 
-                   color=[colors[s] for s in strategies], alpha=0.7)
+                   color=[strategy_colors[s] for s in strategies], alpha=0.7)
     ax.set_xticks(x_pos)
-    ax.set_xticklabels([strategy_labels[s] for s in strategies])
+    ax.set_xticklabels([strategy_labels[s] for s in strategies], rotation=45, ha='right')
     ax.set_ylabel('平均応答時間（分）')
     ax.set_title('全体平均応答時間')
     ax.grid(True, alpha=0.3)
@@ -225,48 +278,40 @@ def visualize_comparison(analysis: Dict, output_dir: str):
     # 数値表示
     for i, (mean, std) in enumerate(zip(means, stds)):
         ax.text(i, mean + std + 0.1, f'{mean:.2f}±{std:.2f}', 
-                ha='center', va='bottom')
+                ha='center', va='bottom', fontsize=10)
     
     # 2. 重症系の平均応答時間
-    ax = axes[0, 1]
+    ax = axes[1]
     means_severe = [analysis[s]['response_time_severe']['mean'] for s in strategies]
     stds_severe = [analysis[s]['response_time_severe']['std'] for s in strategies]
     bars = ax.bar(x_pos, means_severe, yerr=stds_severe, capsize=5,
-                   color=[colors[s] for s in strategies], alpha=0.7)
+                   color=[strategy_colors[s] for s in strategies], alpha=0.7)
     ax.set_xticks(x_pos)
-    ax.set_xticklabels([strategy_labels[s] for s in strategies])
+    ax.set_xticklabels([strategy_labels[s] for s in strategies], rotation=45, ha='right')
     ax.set_ylabel('平均応答時間（分）')
     ax.set_title('重症・重篤・死亡の平均応答時間')
     ax.grid(True, alpha=0.3)
     
-    # 改善率を計算して表示
-    if means_severe[0] > 0:
-        improvement = (means_severe[0] - means_severe[1]) / means_severe[0] * 100
-        ax.text(0.5, max(means_severe) * 0.9, 
-                f'改善率: {improvement:.1f}%',
-                ha='center', transform=ax.transData,
-                bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.5))
-    
     # 3. 軽症系の平均応答時間
-    ax = axes[0, 2]
+    ax = axes[2]
     means_mild = [analysis[s]['response_time_mild']['mean'] for s in strategies]
     stds_mild = [analysis[s]['response_time_mild']['std'] for s in strategies]
     bars = ax.bar(x_pos, means_mild, yerr=stds_mild, capsize=5,
-                   color=[colors[s] for s in strategies], alpha=0.7)
+                   color=[strategy_colors[s] for s in strategies], alpha=0.7)
     ax.set_xticks(x_pos)
-    ax.set_xticklabels([strategy_labels[s] for s in strategies])
+    ax.set_xticklabels([strategy_labels[s] for s in strategies], rotation=45, ha='right')
     ax.set_ylabel('平均応答時間（分）')
     ax.set_title('軽症・中等症の平均応答時間')
     ax.grid(True, alpha=0.3)
     
     # 4. 6分以内達成率（全体）
-    ax = axes[1, 0]
+    ax = axes[3]
     means_6min = [analysis[s]['threshold_6min']['mean'] for s in strategies]
     stds_6min = [analysis[s]['threshold_6min']['std'] for s in strategies]
     bars = ax.bar(x_pos, means_6min, yerr=stds_6min, capsize=5,
-                   color=[colors[s] for s in strategies], alpha=0.7)
+                   color=[strategy_colors[s] for s in strategies], alpha=0.7)
     ax.set_xticks(x_pos)
-    ax.set_xticklabels([strategy_labels[s] for s in strategies])
+    ax.set_xticklabels([strategy_labels[s] for s in strategies], rotation=45, ha='right')
     ax.set_ylabel('達成率（%）')
     ax.set_title('6分以内達成率（全体）')
     ax.set_ylim(0, 100)
@@ -275,30 +320,49 @@ def visualize_comparison(analysis: Dict, output_dir: str):
     ax.grid(True, alpha=0.3)
     
     # 5. 13分以内達成率（全体）
-    ax = axes[1, 1]
+    ax = axes[4]
     means_13min = [analysis[s]['threshold_13min']['mean'] for s in strategies]
     stds_13min = [analysis[s]['threshold_13min']['std'] for s in strategies]
     bars = ax.bar(x_pos, means_13min, yerr=stds_13min, capsize=5,
-                   color=[colors[s] for s in strategies], alpha=0.7)
+                   color=[strategy_colors[s] for s in strategies], alpha=0.7)
     ax.set_xticks(x_pos)
-    ax.set_xticklabels([strategy_labels[s] for s in strategies])
+    ax.set_xticklabels([strategy_labels[s] for s in strategies], rotation=45, ha='right')
     ax.set_ylabel('達成率（%）')
     ax.set_title('13分以内達成率（全体）')
     ax.set_ylim(0, 100)
     ax.grid(True, alpha=0.3)
     
     # 6. 重症系の6分以内達成率
-    ax = axes[1, 2]
+    ax = axes[5]
     means_6min_severe = [analysis[s]['threshold_6min_severe']['mean'] for s in strategies]
     stds_6min_severe = [analysis[s]['threshold_6min_severe']['std'] for s in strategies]
     bars = ax.bar(x_pos, means_6min_severe, yerr=stds_6min_severe, capsize=5,
-                   color=[colors[s] for s in strategies], alpha=0.7)
+                   color=[strategy_colors[s] for s in strategies], alpha=0.7)
     ax.set_xticks(x_pos)
-    ax.set_xticklabels([strategy_labels[s] for s in strategies])
+    ax.set_xticklabels([strategy_labels[s] for s in strategies], rotation=45, ha='right')
     ax.set_ylabel('達成率（%）')
     ax.set_title('6分以内達成率（重症・重篤）')
     ax.set_ylim(0, 100)
     ax.grid(True, alpha=0.3)
+    
+    # 7. 統計的有意性のヒートマップ（4つ以上の戦略がある場合）
+    if num_strategies >= 4 and 6 < max_plots:
+        ax = axes[6]
+        create_significance_heatmap(analysis, strategies, strategy_labels, ax)
+    
+    # 8. 改善率の比較（ベースライン戦略との比較）
+    if num_strategies >= 2:
+        # 3つの戦略の場合：6番目のサブプロットに改善率比較を表示
+        # 4つ以上の戦略の場合：7番目のサブプロットに改善率比較を表示
+        plot_index = 6 if num_strategies == 3 else (7 if 7 < max_plots else 6)
+        if plot_index < max_plots:
+            ax = axes[plot_index]
+            create_improvement_comparison(analysis, strategies, strategy_labels, strategy_colors, ax)
+    
+    # 未使用のサブプロットを非表示
+    for i in range(len(axes)):
+        if i >= max_plots:
+            axes[i].set_visible(False)
     
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'strategy_comparison.png'), dpi=300, bbox_inches='tight')
@@ -306,21 +370,89 @@ def visualize_comparison(analysis: Dict, output_dir: str):
     
     print(f"\n比較グラフを保存: {os.path.join(output_dir, 'strategy_comparison.png')}")
 
+def create_significance_heatmap(analysis: Dict, strategies: List[str], strategy_labels: Dict, ax):
+    """統計的有意性のヒートマップを作成"""
+    num_strategies = len(strategies)
+    p_values = np.zeros((num_strategies, num_strategies))
+    
+    # 重症系応答時間での統計的有意性を計算
+    for i, strategy1 in enumerate(strategies):
+        for j, strategy2 in enumerate(strategies):
+            if i == j:
+                p_values[i, j] = 1.0
+            else:
+                values1 = analysis[strategy1]['response_time_severe']['values']
+                values2 = analysis[strategy2]['response_time_severe']['values']
+                if len(values1) > 1 and len(values2) > 1:
+                    _, p_val = stats.ttest_ind(values1, values2)
+                    p_values[i, j] = p_val
+                else:
+                    p_values[i, j] = 1.0
+    
+    # ヒートマップの作成
+    im = ax.imshow(p_values, cmap='RdYlBu_r', vmin=0, vmax=0.1)
+    ax.set_xticks(range(num_strategies))
+    ax.set_yticks(range(num_strategies))
+    ax.set_xticklabels([strategy_labels[s] for s in strategies], rotation=45, ha='right')
+    ax.set_yticklabels([strategy_labels[s] for s in strategies])
+    ax.set_title('統計的有意性（重症系応答時間）\np値 < 0.05で有意差あり')
+    
+    # 数値表示
+    for i in range(num_strategies):
+        for j in range(num_strategies):
+            text = ax.text(j, i, f'{p_values[i, j]:.3f}',
+                          ha="center", va="center", color="black", fontsize=8)
+    
+    plt.colorbar(im, ax=ax, label='p値')
+
+def create_improvement_comparison(analysis: Dict, strategies: List[str], strategy_labels: Dict, strategy_colors: Dict, ax):
+    """ベースライン戦略との改善率比較"""
+    baseline = strategies[0]  # 最初の戦略をベースラインとする
+    improvements = []
+    labels = []
+    
+    for strategy in strategies[1:]:
+        baseline_mean = analysis[baseline]['response_time_severe']['mean']
+        strategy_mean = analysis[strategy]['response_time_severe']['mean']
+        
+        if baseline_mean > 0:
+            improvement = (baseline_mean - strategy_mean) / baseline_mean * 100
+            improvements.append(improvement)
+            labels.append(strategy_labels[strategy])
+    
+    if improvements:
+        bars = ax.bar(range(len(improvements)), improvements, 
+                     color=[strategy_colors[s] for s in strategies[1:]])
+        ax.set_xticks(range(len(improvements)))
+        ax.set_xticklabels(labels, rotation=45, ha='right')
+        ax.set_ylabel('改善率（%）')
+        ax.set_title(f'ベースライン（{strategy_labels[baseline]}）との比較')
+        ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+        ax.grid(True, alpha=0.3)
+        
+        # 数値表示
+        for i, (bar, improvement) in enumerate(zip(bars, improvements)):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                   f'{improvement:+.1f}%', ha='center', va='bottom')
+
 def create_summary_report(analysis: Dict, output_dir: str):
     """
-    サマリーレポートの作成
+    サマリーレポートの作成（複数戦略対応）
     """
     report_path = os.path.join(output_dir, 'comparison_summary.txt')
+    strategies = EXPERIMENT_CONFIG['strategies']
+    strategy_labels = EXPERIMENT_CONFIG['strategy_labels']
     
     with open(report_path, 'w', encoding='utf-8') as f:
         f.write("=" * 60 + "\n")
         f.write("ディスパッチ戦略比較実験 サマリーレポート\n")
         f.write(f"作成日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"比較戦略数: {len(strategies)}\n")
         f.write("=" * 60 + "\n\n")
         
         # 戦略別の結果
-        for strategy in ['closest', 'severity_based']:
-            strategy_label = '直近隊運用' if strategy == 'closest' else '傷病度考慮運用'
+        for strategy in strategies:
+            strategy_label = strategy_labels[strategy]
             f.write(f"【{strategy_label}】\n")
             f.write("-" * 40 + "\n")
             
@@ -336,55 +468,65 @@ def create_summary_report(analysis: Dict, output_dir: str):
             f.write(f"   13分以内（全体）: {data['threshold_13min']['mean']:.1f} ± {data['threshold_13min']['std']:.1f} %\n")
             f.write(f"   6分以内（重症系）: {data['threshold_6min_severe']['mean']:.1f} ± {data['threshold_6min_severe']['std']:.1f} %\n\n")
         
-        # 比較結果
+        # 統計的比較結果
         f.write("=" * 60 + "\n")
-        f.write("【比較結果】\n")
+        f.write("【統計的比較結果】\n")
         f.write("-" * 40 + "\n")
         
-        # 重症系の改善率
-        rt_severe_closest = analysis['closest']['response_time_severe']['mean']
-        rt_severe_severity = analysis['severity_based']['response_time_severe']['mean']
-        if rt_severe_closest > 0:
-            improvement_severe = (rt_severe_closest - rt_severe_severity) / rt_severe_closest * 100
-            f.write(f"重症系応答時間の改善: {improvement_severe:+.1f}%\n")
-            f.write(f"  直近隊: {rt_severe_closest:.2f}分 → 傷病度考慮: {rt_severe_severity:.2f}分\n\n")
-        
-        # 6分達成率の改善
-        th6_severe_closest = analysis['closest']['threshold_6min_severe']['mean']
-        th6_severe_severity = analysis['severity_based']['threshold_6min_severe']['mean']
-        improvement_th6 = th6_severe_severity - th6_severe_closest
-        f.write(f"重症系6分達成率の改善: {improvement_th6:+.1f}ポイント\n")
-        f.write(f"  直近隊: {th6_severe_closest:.1f}% → 傷病度考慮: {th6_severe_severity:.1f}%\n\n")
-        
-        # 統計的有意性の簡易チェック（t検定）
-        from scipy import stats
-        
-        if (len(analysis['closest']['response_time_severe']['values']) > 1 and 
-            len(analysis['severity_based']['response_time_severe']['values']) > 1):
+        if len(strategies) >= 3:
+            # 3つ以上の戦略：ANOVA
+            f.write("3群以上の比較（ANOVA）:\n")
+            severe_times = [analysis[s]['response_time_severe']['values'] for s in strategies]
+            severe_times = [times for times in severe_times if len(times) > 1]
             
-            t_stat, p_value = stats.ttest_ind(
-                analysis['closest']['response_time_severe']['values'],
-                analysis['severity_based']['response_time_severe']['values']
-            )
-            
-            f.write(f"統計的有意性（重症系応答時間）:\n")
-            f.write(f"  t統計量: {t_stat:.3f}\n")
-            f.write(f"  p値: {p_value:.4f}\n")
-            f.write(f"  結果: {'有意差あり' if p_value < 0.05 else '有意差なし'} (α=0.05)\n")
+            if len(severe_times) >= 3:
+                f_stat, p_value = stats.f_oneway(*severe_times)
+                f.write(f"  重症系応答時間: F={f_stat:.3f}, p={p_value:.4f}\n")
+                f.write(f"  結果: {'有意差あり' if p_value < 0.05 else '有意差なし'} (α=0.05)\n\n")
+        
+        # ペアワイズ比較
+        f.write("ペアワイズ比較（t検定）:\n")
+        for i, strategy1 in enumerate(strategies):
+            for j, strategy2 in enumerate(strategies[i+1:], i+1):
+                values1 = analysis[strategy1]['response_time_severe']['values']
+                values2 = analysis[strategy2]['response_time_severe']['values']
+                
+                if len(values1) > 1 and len(values2) > 1:
+                    t_stat, p_value = stats.ttest_ind(values1, values2)
+                    f.write(f"  {strategy_labels[strategy1]} vs {strategy_labels[strategy2]}: ")
+                    f.write(f"t={t_stat:.3f}, p={p_value:.4f} ")
+                    f.write(f"({'有意差あり' if p_value < 0.05 else '有意差なし'})\n")
+        
+        # 改善率の比較
+        f.write("\n改善率の比較（ベースライン: 直近隊運用）:\n")
+        baseline = strategies[0]
+        baseline_mean = analysis[baseline]['response_time_severe']['mean']
+        
+        for strategy in strategies[1:]:
+            strategy_mean = analysis[strategy]['response_time_severe']['mean']
+            if baseline_mean > 0:
+                improvement = (baseline_mean - strategy_mean) / baseline_mean * 100
+                f.write(f"  {strategy_labels[strategy]}: {improvement:+.1f}%\n")
     
     print(f"サマリーレポートを保存: {report_path}")
 
 if __name__ == "__main__":
-    # 実験パラメータ
-    target_date = "20231201"  # 開始日
-    duration_hours = 720       # 1週間
-    num_runs = 5              # 各戦略5回実行
+    # ============================================================
+    # 【設定変更箇所2】実験パラメータ
+    # ============================================================
+    EXPERIMENT_PARAMS = {
+        'target_date': "20231201",  # 開始日
+        'duration_hours': 24,       # 30日間
+        'num_runs': 3,              # 各戦略5回実行
+        'output_base_dir': 'data/tokyo/experiments'
+    }
     
     # 実験実行
     results = run_comparison_experiment(
-        target_date=target_date,
-        duration_hours=duration_hours,
-        num_runs=num_runs
+        target_date=EXPERIMENT_PARAMS['target_date'],
+        duration_hours=EXPERIMENT_PARAMS['duration_hours'],
+        num_runs=EXPERIMENT_PARAMS['num_runs'],
+        output_base_dir=EXPERIMENT_PARAMS['output_base_dir']
     )
     
     print("\n実験完了！")
