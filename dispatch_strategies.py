@@ -133,9 +133,16 @@ class SeverityBasedStrategy(DispatchStrategy):
         super().__init__("severity_based", "rule_based")
         self.severe_conditions = ['重症', '重篤', '死亡']
         self.mild_conditions = ['軽症', '中等症']
-        self.coverage_radius_km = 5.0  # カバレッジ計算用の半径
-        self.time_threshold_6min = 360  # 6分（秒）
-        self.time_threshold_13min = 780  # 13分（秒）
+        self.coverage_radius_km = 5.0
+        self.time_threshold_6min = 360
+        self.time_threshold_13min = 780
+        
+        # 新規追加: 傷病度別の時間制限（設定可能に）
+        self.time_limits = {
+            '軽症': 1080,    # 18分
+            '中等症': 900,   # 15分
+            'その他': 780    # 13分（デフォルト）
+        }
         
     def initialize(self, config: Dict):
         """戦略の初期化"""
@@ -181,24 +188,48 @@ class SeverityBasedStrategy(DispatchStrategy):
         return closest_ambulance
     
     def _select_with_coverage(self,
-                             request: EmergencyRequest,
-                             available_ambulances: List[AmbulanceInfo],
-                             travel_time_func: callable,
-                             context: DispatchContext) -> Optional[AmbulanceInfo]:
-        """カバレッジを考慮した救急車選択"""
+                            request: EmergencyRequest,
+                            available_ambulances: List[AmbulanceInfo],
+                            travel_time_func: callable,
+                            context: DispatchContext) -> Optional[AmbulanceInfo]:
+        """カバレッジを考慮した救急車選択（修正版）"""
         
-        # Step 1: 13分以内到着可能な救急車をフィルタリング
+        # ===== 修正箇所1: 傷病度別の時間制限 =====
+        # 元のコード:
+        # candidates = []
+        # for amb in available_ambulances:
+        #     travel_time = travel_time_func(amb.current_h3, request.h3_index, 'response')
+        #     if travel_time <= self.time_threshold_13min:
+        #         candidates.append((amb, travel_time))
+        
+        # 修正後:
+        # 傷病度に応じて制限時間を設定
+        if request.severity == '軽症':
+            time_limit = 1080  # 18分（780秒から大幅緩和）
+        elif request.severity == '中等症':
+            time_limit = 900   # 15分（少し緩和）
+        else:
+            time_limit = self.time_threshold_13min  # 13分（デフォルト）
+        
         candidates = []
         for amb in available_ambulances:
             travel_time = travel_time_func(amb.current_h3, request.h3_index, 'response')
-            if travel_time <= self.time_threshold_13min:
+            if travel_time <= time_limit:
                 candidates.append((amb, travel_time))
+        
+        # ===== 修正箇所2: 軽症の場合、近い救急車を避ける =====
+        # 新規追加:
+        if request.severity == '軽症' and len(candidates) > 3:
+            # 6分以内の救急車を除外（重症用に温存）
+            filtered_candidates = [(amb, tt) for amb, tt in candidates if tt > 360]
+            if filtered_candidates:
+                candidates = filtered_candidates
         
         # 13分以内の候補がない場合は最寄りを選択
         if not candidates:
             return self._select_closest(request, available_ambulances, travel_time_func)
         
-        # Step 2: 各候補のカバレッジスコアを計算
+        # ===== 修正箇所3: スコア計算の重み調整 =====
         best_ambulance = None
         best_score = float('inf')
         
@@ -208,10 +239,22 @@ class SeverityBasedStrategy(DispatchStrategy):
                 amb, available_ambulances, travel_time_func, context
             )
             
-            # 複合スコア（応答時間40%、カバレッジ60%の重み付け）
-            # 応答時間は13分で正規化
-            time_score = travel_time / self.time_threshold_13min
-            combined_score = time_score * 0.6 + coverage_loss * 0.4 #v2 time0.4, coverage0.6から変更
+            # 元のコード:
+            # time_score = travel_time / self.time_threshold_13min
+            # combined_score = time_score * 0.4 + coverage_loss * 0.6
+            
+            # 修正後: 傷病度別の重み付け
+            time_score = travel_time / time_limit  # 制限時間で正規化
+            
+            if request.severity == '軽症':
+                # 軽症：時間をあまり重視しない（遠くてもOK）
+                combined_score = time_score * 0.2 + coverage_loss * 0.8
+            elif request.severity == '中等症':
+                # 中等症：バランス型
+                combined_score = time_score * 0.5 + coverage_loss * 0.5
+            else:
+                # その他：時間重視（元の設定）
+                combined_score = time_score * 0.6 + coverage_loss * 0.4
             
             if combined_score < best_score:
                 best_score = combined_score
