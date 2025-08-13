@@ -211,7 +211,7 @@ class SeverityBasedStrategy(DispatchStrategy):
             # 複合スコア（応答時間40%、カバレッジ60%の重み付け）
             # 応答時間は13分で正規化
             time_score = travel_time / self.time_threshold_13min
-            combined_score = time_score * 0.4 + coverage_loss * 0.6
+            combined_score = time_score * 0.6 + coverage_loss * 0.4 #v2 time0.4, coverage0.6から変更
             
             if combined_score < best_score:
                 best_score = combined_score
@@ -283,7 +283,7 @@ class SeverityBasedStrategy(DispatchStrategy):
         loss_13min = (coverage_13min_before - coverage_13min_after) / total_points
         
         # 6分カバレッジの損失により重みを置く
-        combined_loss = loss_6min * 0.7 + loss_13min * 0.3
+        combined_loss = loss_6min * 0.5 + loss_13min * 0.5 #v2 loss_6min0.7, loss_13min0.3から変更
         
         # 0-1の範囲にクリップ
         return max(0.0, min(1.0, combined_loss))

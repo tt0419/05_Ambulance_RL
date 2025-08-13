@@ -376,7 +376,7 @@ def create_summary_report(analysis: Dict, output_dir: str):
 
 if __name__ == "__main__":
     # 実験パラメータ
-    target_date = "20231201"  # 開始日
+    target_date = "20230401"  # 開始日
     duration_hours = 720       # 1週間
     num_runs = 5              # 各戦略5回実行
     
