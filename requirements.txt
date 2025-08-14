@@ -14,6 +14,13 @@ tqdm>=4.62.0
 matplotlib>=3.5.0
 seaborn>=0.11.0
 
+# YAML設定ファイル
+PyYAML>=6.0
+
+# 機械学習・深層学習
+torch>=1.9.0
+torchvision>=0.10.0
+
 # 日本語フォント対応（Windows環境用）
 # Windowsの場合、matplotlibで日本語フォント（Meiryo）を使用するため
 # 必要に応じて以下もインストール:

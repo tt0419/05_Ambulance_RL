@@ -6,7 +6,7 @@ PPO学習のトレーナークラス
 import torch
 import numpy as np
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 import json
 import time
 from datetime import datetime
