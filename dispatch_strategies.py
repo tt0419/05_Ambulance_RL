@@ -202,12 +202,11 @@ class SeverityBasedStrategy(DispatchStrategy):
         #     if travel_time <= self.time_threshold_13min:
         #         candidates.append((amb, travel_time))
         
-        # 修正後:
         # 傷病度に応じて制限時間を設定
         if request.severity == '軽症':
-            time_limit = 1080  # 18分（780秒から大幅緩和）
+            time_limit = 780  # 13分（v2時点の設定）
         elif request.severity == '中等症':
-            time_limit = 900   # 15分（少し緩和）
+            time_limit = 780   # 13分（v2時点の設定）
         else:
             time_limit = self.time_threshold_13min  # 13分（デフォルト）
         
@@ -217,13 +216,7 @@ class SeverityBasedStrategy(DispatchStrategy):
             if travel_time <= time_limit:
                 candidates.append((amb, travel_time))
         
-        # ===== 修正箇所2: 軽症の場合、近い救急車を避ける =====
-        # 新規追加:
-        if request.severity == '軽症' and len(candidates) > 3:
-            # 6分以内の救急車を除外（重症用に温存）
-            filtered_candidates = [(amb, tt) for amb, tt in candidates if tt > 360]
-            if filtered_candidates:
-                candidates = filtered_candidates
+
         
         # 13分以内の候補がない場合は最寄りを選択
         if not candidates:
@@ -243,18 +236,10 @@ class SeverityBasedStrategy(DispatchStrategy):
             # time_score = travel_time / self.time_threshold_13min
             # combined_score = time_score * 0.4 + coverage_loss * 0.6
             
-            # 修正後: 傷病度別の重み付け
-            time_score = travel_time / time_limit  # 制限時間で正規化
-            
-            if request.severity == '軽症':
-                # 軽症：時間をあまり重視しない（遠くてもOK）
-                combined_score = time_score * 0.2 + coverage_loss * 0.8
-            elif request.severity == '中等症':
-                # 中等症：バランス型
-                combined_score = time_score * 0.5 + coverage_loss * 0.5
-            else:
-                # その他：時間重視（元の設定）
-                combined_score = time_score * 0.6 + coverage_loss * 0.4
+            # 複合スコア（応答時間40%、カバレッジ60%の重み付け）
+            # 応答時間は13分で正規化
+            time_score = travel_time / self.time_threshold_13min
+            combined_score = time_score * 0.6 + coverage_loss * 0.4
             
             if combined_score < best_score:
                 best_score = combined_score

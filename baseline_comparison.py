@@ -31,7 +31,9 @@ from dispatch_strategies import STRATEGY_CONFIGS
 # ============================================================
 EXPERIMENT_CONFIG = {
     # 比較する戦略のリスト（ここで戦略を追加・削除）
-    'strategies': ['closest', 'severity_based', 'advanced_severity'],
+    'strategies': ['closest', 'severity_based'
+                   #, 'advanced_severity'
+                   ],
     
     # 各戦略の日本語表示名
     'strategy_labels': {
@@ -515,7 +517,7 @@ if __name__ == "__main__":
     # 【設定変更箇所2】実験パラメータ
     # ============================================================
     EXPERIMENT_PARAMS = {
-        'target_date': "20231201",  # 開始日
+        'target_date': "20230401",  # 開始日
         'duration_hours': 24,       # 30日間
         'num_runs': 3,              # 各戦略5回実行
         'output_base_dir': 'data/tokyo/experiments'
