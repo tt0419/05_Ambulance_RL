@@ -130,7 +130,7 @@ class PPOAgent:
             else:
                 dist = Categorical(masked_probs)
                 action = dist.sample().item()
-                log_prob = dist.log_prob(torch.tensor(action))
+                log_prob = dist.log_prob(torch.tensor(action, device=self.device))
             
             # Critic出力（状態価値）
             value = self.critic(state_tensor).squeeze().item()
