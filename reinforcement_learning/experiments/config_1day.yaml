@@ -1,0 +1,23 @@
+# 1日分のデータで学習
+experiment:
+  name: "ppo_1day_training"
+  seed: 42
+  device: "cuda"
+
+data:
+  train_periods:
+    - start_date: "20230401"
+      end_date: "20230401"
+  eval_periods:
+    - start_date: "20230402"
+      end_date: "20230402"
+  episode_duration_hours: 6  # 6時間
+
+ppo:
+  n_episodes: 500
+  n_epochs: 5
+  batch_size: 32
+
+evaluation:
+  interval: 50
+  n_eval_episodes: 5

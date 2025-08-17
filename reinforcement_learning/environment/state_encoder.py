@@ -75,16 +75,21 @@ class StateEncoder:
     
     def _encode_ambulances(self, ambulances: Dict, grid_mapping: Dict) -> np.ndarray:
         """救急車情報をエンコード"""
-        features = np.zeros(self.max_ambulances * self.ambulance_features)
+        # 192台固定
+        max_ambulances = 192
+        features = np.zeros(max_ambulances * self.ambulance_features)
         
         for amb_id, amb_state in ambulances.items():
-            if amb_id >= self.max_ambulances:
+            if amb_id >= max_ambulances:
                 break
             
             idx = amb_id * self.ambulance_features
             
             # H3インデックスを座標に変換
-            lat, lng = h3.cell_to_latlng(amb_state['current_h3'])
+            try:
+                lat, lng = h3.cell_to_latlng(amb_state['current_h3'])
+            except:
+                lat, lng = 35.6762, 139.6503  # デフォルト（東京）
             
             # 特徴量の設定
             features[idx] = lat / 90.0  # 緯度を正規化

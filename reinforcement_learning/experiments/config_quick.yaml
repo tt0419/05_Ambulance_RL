@@ -1,0 +1,93 @@
+# 動作確認用の超軽量設定
+experiment:
+  name: "ppo_quick_test"
+  seed: 42
+  device: "cuda"
+
+data:
+  train_periods:
+    - start_date: "20230401"
+      end_date: "20230401"  # 1日のみ
+  eval_periods:
+    - start_date: "20230402"
+      end_date: "20230402"
+  episode_duration_hours: 2  # 2時間
+
+severity:
+  categories:
+    critical:
+      conditions: ["重篤", "重症", "死亡"]
+      reward_weight: 5.0
+      time_limit_seconds: 360
+    moderate:
+      conditions: ["中等症"]
+      reward_weight: 2.0
+      time_limit_seconds: 480
+    mild:
+      conditions: ["軽症"]
+      reward_weight: 1.0
+      time_limit_seconds: 780
+  thresholds:
+    golden_time: 360
+    standard_time: 780
+
+ppo:
+  n_episodes: 20
+  n_epochs: 3
+  batch_size: 8
+  clip_epsilon: 0.2
+  gamma: 0.99
+  gae_lambda: 0.95
+  learning_rate:
+    actor: 0.0003
+    critic: 0.0003
+    scheduler: "cosine"
+  entropy_coef: 0.01
+
+reward:
+  weights:
+    response_time: -1.0
+    severity_bonus: 2.0
+    threshold_penalty: -10.0
+    coverage_preservation: 0.5
+  penalties:
+    over_6min: -5.0
+    over_13min: -20.0
+    per_minute_over: -1.0
+
+network:
+  state_encoder:
+    ambulance_features: 8
+    incident_features: 6
+    spatial_features: 16
+    temporal_features: 8
+  actor:
+    hidden_layers: [128, 64]  # 軽量化
+    activation: "relu"
+    dropout: 0.1
+  critic:
+    hidden_layers: [128, 64]  # 軽量化
+    activation: "relu"
+    dropout: 0.1
+
+training:
+  checkpoint_interval: 5  # デバッグ用に短縮
+  keep_last_n: 3
+  early_stopping:
+    enabled: false  # クイックテストでは無効化
+    patience: 50  # 使用しないが必須フィールド
+    min_delta: 0.001  # 使用しないが必須フィールド
+  logging:
+    interval: 5
+    tensorboard: true
+    wandb: false
+
+evaluation:
+  interval: 10  # クイックテスト用
+  n_eval_episodes: 2  # 軽量化
+  metrics:
+    - "mean_response_time"
+    - "6min_achievement_rate"
+    - "13min_achievement_rate"
+  compare_baselines:
+    - "closest"

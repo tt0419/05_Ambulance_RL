@@ -66,12 +66,55 @@ class EMSEnvironment:
         self.base_dir = Path("data/tokyo")
         self._load_base_data()
         
+        # 移動時間行列の読み込み（ValidationSimulatorと同じ方法）
+        self.travel_time_matrices = {}
+        self.travel_distance_matrices = {}
+        
+        calibration_dir = self.base_dir / "calibration2"
+        travel_time_stats_path = calibration_dir / 'travel_time_statistics_all_phases.json'
+        
+        if travel_time_stats_path.exists():
+            with open(travel_time_stats_path, 'r', encoding='utf-8') as f:
+                phase_stats_data = json.load(f)
+            
+            # ValidationSimulatorと同じロジックで行列を読み込み
+            for phase in ['response', 'transport', 'return']:
+                matrix_filename = None
+                
+                if phase in phase_stats_data and 'calibrated' in phase_stats_data[phase]:
+                    model_type = phase_stats_data[phase]['calibrated'].get('model_type')
+                    
+                    if model_type == "uncalibrated":
+                        matrix_filename = f"uncalibrated_travel_time_{phase}.npy"
+                    elif model_type in ['linear', 'log']:
+                        matrix_filename = f"{model_type}_calibrated_{phase}.npy"
+                    
+                    if matrix_filename:
+                        matrix_path = calibration_dir / matrix_filename
+                        if matrix_path.exists():
+                            self.travel_time_matrices[phase] = np.load(matrix_path)
+                            print(f"  移動時間行列読み込み: {phase} ({model_type})")
+        
+        # 距離行列も同様に読み込み
+        distance_matrix_path = self.base_dir / "processed/travel_distance_matrix_res9.npy"
+        if distance_matrix_path.exists():
+            travel_distance_matrix = np.load(distance_matrix_path)
+            # ValidationSimulatorと同じ形式に変換
+            self.travel_distance_matrices = {
+                'dispatch_to_scene': travel_distance_matrix,
+                'scene_to_hospital': travel_distance_matrix,
+                'hospital_to_station': travel_distance_matrix
+            }
+        
         # シミュレータの初期化は reset() で行う
         self.simulator = None
         self.current_episode_calls = []
         self.pending_call = None
         self.episode_step = 0
         self.max_steps_per_episode = None
+        
+        # デバッグ用のverbose_logging属性を初期化
+        self.verbose_logging = False
         
         # 状態・行動空間の次元
         self.state_dim = self._calculate_state_dim()
@@ -82,6 +125,10 @@ class EMSEnvironment:
         
         # 統計情報の初期化
         self.episode_stats = self._init_episode_stats()
+        
+        # RewardDesignerを一度だけ初期化
+        from .reward_designer import RewardDesigner
+        self.reward_designer = RewardDesigner(self.config)        
         
     def _setup_severity_mapping(self):
         """傷病度マッピングの設定"""
@@ -135,19 +182,20 @@ class EMSEnvironment:
         
     def _calculate_state_dim(self):
         """状態空間の次元を計算"""
-        # 状態の構成要素
-        # - 救急車情報: 最大300台 × 4特徴 = 1200
-        # - 事案情報: 10特徴
-        # - 時間情報: 8特徴
-        # - 地域統計: 20特徴
-        # 合計: 約1238次元
+        # 192台の救急車 × 4特徴
+        ambulance_features = 192 * 4  # 768
         
-        ambulance_features = 192 * 4  # 位置、状態、出動回数、経過時間
-        incident_features = 10  # 位置、傷病度、etc
-        temporal_features = 8  # 時刻、曜日、etc
-        spatial_features = 20  # 地域の混雑度、etc
+        # 事案情報
+        incident_features = 10
         
-        return ambulance_features + incident_features + temporal_features + spatial_features
+        # 時間情報
+        temporal_features = 8
+        
+        # 空間情報
+        spatial_features = 20
+        
+        total = ambulance_features + incident_features + temporal_features + spatial_features
+        return total  # 806
     
     def reset(self, period_index: Optional[int] = None) -> np.ndarray:
         """
@@ -175,19 +223,20 @@ class EMSEnvironment:
         
         # エピソード統計のリセット
         self.episode_stats = self._init_episode_stats()
-        self.episode_step = 0
         
-        # 最初の事案を取得
-        self._advance_to_next_call()
+        # 最初の事案を設定（重要！）
+        if len(self.current_episode_calls) > 0:
+            self.episode_step = 0
+            self.pending_call = self.current_episode_calls[0]
+        else:
+            print("警告: エピソードに事案がありません")
+            self.pending_call = None
         
         # 初期観測を返す
         return self._get_observation()
     
     def _init_simulator_for_period(self, period: Dict):
         """指定期間用のシミュレータを初期化"""
-        # 簡易版: ValidationSimulatorの軽量ラッパーを作成
-        # 実際の実装では、ValidationSimulatorを適切に初期化
-        
         # 救急事案データの読み込み
         calls_df = self._load_calls_for_period(period)
         
@@ -195,48 +244,167 @@ class EMSEnvironment:
         self.current_episode_calls = self._prepare_episode_calls(calls_df)
         self.max_steps_per_episode = len(self.current_episode_calls)
         
+        print(f"読み込まれた事案数: {len(self.current_episode_calls)}")
+        
         # 救急車状態の初期化
         self._init_ambulance_states()
         
+        # エピソードカウンタ初期化（重要！）
+        self.episode_step = 0
+        self.pending_call = None
+        
     def _load_calls_for_period(self, period: Dict) -> pd.DataFrame:
         """指定期間の救急事案データを読み込み"""
-        # 実際のデータ読み込み処理
-        # ここでは簡易版
-        calls_path = "C:/Users/hp/OneDrive - Yokohama City University/30_データカタログ/tfd_data/hanso_special_wards.csv"
+        import os
+        import pandas as pd
+        
+        # データファイルのパス（両方のユーザーに対応）
+        possible_paths = [
+            "C:/Users/tetsu/OneDrive - Yokohama City University/30_データカタログ/tfd_data/hanso_special_wards.csv",
+            "C:/Users/hp/OneDrive - Yokohama City University/30_データカタログ/tfd_data/hanso_special_wards.csv"
+        ]
+        
+        calls_path = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                calls_path = path
+                break
+        
+        if calls_path is None:
+            print("エラー: データファイルが見つかりません")
+            return pd.DataFrame()
+        
+        # データ読み込み
+        print(f"データ読み込み中: {os.path.basename(calls_path)}")
         calls_df = pd.read_csv(calls_path, encoding='utf-8')
         
-        # 期間でフィルタリング
-        calls_df['出場年月日時分'] = pd.to_datetime(calls_df['出場年月日時分'])
-        start_date = pd.to_datetime(period['start_date'])
-        end_date = pd.to_datetime(period['end_date'])
+        # 日付変換（文字列から datetime へ）
+        calls_df['出場年月日時分'] = pd.to_datetime(calls_df['出場年月日時分'], errors='coerce')
         
+        # NaTを除外
+        calls_df = calls_df.dropna(subset=['出場年月日時分'])
+        
+        # 期間の日付をパース
+        # period['start_date'] は "20230401" 形式の文字列
+        start_str = str(period['start_date'])
+        end_str = str(period['end_date'])
+        
+        # YYYYMMDD形式をYYYY-MM-DD形式に変換
+        start_date_str = f"{start_str[:4]}-{start_str[4:6]}-{start_str[6:8]}"
+        end_date_str = f"{end_str[:4]}-{end_str[4:6]}-{end_str[6:8]}"
+        
+        start_date = pd.to_datetime(start_date_str)
+        end_date = pd.to_datetime(end_date_str) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        
+        print(f"期間: {start_date.strftime('%Y-%m-%d')} ～ {end_date.strftime('%Y-%m-%d')}")
+        
+        # 期間でフィルタリング
         mask = (calls_df['出場年月日時分'] >= start_date) & (calls_df['出場年月日時分'] <= end_date)
-        calls_df = calls_df[mask].copy()
+        filtered_df = calls_df[mask].copy()
+        
+        print(f"期間内の事案数: {len(filtered_df)}件")
         
         # 「その他」を除外
-        calls_df = calls_df[calls_df['収容所見程度'] != 'その他']
+        before_filter = len(filtered_df)
+        filtered_df = filtered_df[filtered_df['収容所見程度'] != 'その他']
+        print(f"「その他」除外後: {len(filtered_df)}件 (除外: {before_filter - len(filtered_df)}件)")
         
-        return calls_df
+        # 必要なカラムの存在確認
+        required_columns = ['救急事案番号キー', 'Y_CODE', 'X_CODE', '収容所見程度', '出場年月日時分']
+        missing_columns = [col for col in required_columns if col not in filtered_df.columns]
+        if missing_columns:
+            print(f"警告: 必要なカラムが不足: {missing_columns}")
+            return pd.DataFrame()
+        
+        # 座標の有効性確認
+        before_drop = len(filtered_df)
+        filtered_df = filtered_df.dropna(subset=['Y_CODE', 'X_CODE'])
+        if before_drop > len(filtered_df):
+            print(f"無効な座標を除外: {before_drop - len(filtered_df)}件")
+        
+        print(f"最終的な事案数: {len(filtered_df)}件")
+        
+        if len(filtered_df) > 0:
+            # 傷病度の分布を表示
+            severity_counts = filtered_df['収容所見程度'].value_counts()
+            print("傷病度分布:")
+            for severity, count in severity_counts.head().items():
+                print(f"  {severity}: {count}件")
+        
+        return filtered_df
     
     def _prepare_episode_calls(self, calls_df: pd.DataFrame) -> List[Dict]:
         """エピソード用の事案リストを準備"""
+        import h3
+        import numpy as np
+        import pandas as pd
+        
+        if len(calls_df) == 0:
+            print("警告: 事案データが空です")
+            return []
+        
         episode_calls = []
         
-        for _, row in calls_df.iterrows():
+        # エピソード長の設定（時間）
+        episode_hours = self.config['data']['episode_duration_hours']
+        print(f"エピソード長: {episode_hours}時間")
+        
+        # 時刻でソート
+        calls_df = calls_df.sort_values('出場年月日時分')
+        
+        # エピソードの開始時刻をランダムに選択
+        start_time = calls_df['出場年月日時分'].iloc[0]
+        end_time = calls_df['出場年月日時分'].iloc[-1]
+        
+        # エピソード期間内のデータを選択できる開始時刻の範囲
+        max_start_time = end_time - pd.Timedelta(hours=episode_hours)
+        
+        if start_time >= max_start_time:
+            # データが短すぎる場合は全体を使用
+            episode_start = start_time
+            episode_end = end_time
+            print(f"警告: データ期間が短いため、全期間を使用")
+        else:
+            # ランダムな開始時刻を選択
+            time_range = (max_start_time - start_time).total_seconds()
+            random_offset = np.random.uniform(0, time_range)
+            episode_start = start_time + pd.Timedelta(seconds=random_offset)
+            episode_end = episode_start + pd.Timedelta(hours=episode_hours)
+        
+        # エピソード期間内の事案を抽出
+        mask = (calls_df['出場年月日時分'] >= episode_start) & (calls_df['出場年月日時分'] <= episode_end)
+        episode_df = calls_df[mask].copy()
+        
+        print(f"エピソード期間: {episode_start.strftime('%Y-%m-%d %H:%M')} ～ {episode_end.strftime('%Y-%m-%d %H:%M')}")
+        print(f"エピソード内事案数: {len(episode_df)}件")
+        
+        for _, row in episode_df.iterrows():
             # H3インデックスの計算
-            h3_index = h3.latlng_to_cell(row['Y_CODE'], row['X_CODE'], 9)
+            try:
+                # 座標の有効性チェック
+                lat = float(row['Y_CODE'])
+                lng = float(row['X_CODE'])
+                
+                if -90 <= lat <= 90 and -180 <= lng <= 180:
+                    h3_index = h3.latlng_to_cell(lat, lng, 9)
+                else:
+                    continue  # 無効な座標はスキップ
+            except Exception as e:
+                continue  # 変換エラーはスキップ
             
             call_info = {
                 'id': str(row['救急事案番号キー']),
                 'h3_index': h3_index,
                 'severity': row.get('収容所見程度', 'その他'),
                 'datetime': row['出場年月日時分'],
-                'location': (row['Y_CODE'], row['X_CODE'])
+                'location': (lat, lng)
             }
             episode_calls.append(call_info)
         
         # 時間順にソート
         episode_calls.sort(key=lambda x: x['datetime'])
+        
+        print(f"有効な事案数: {len(episode_calls)}件")
         
         return episode_calls
     
@@ -295,6 +463,50 @@ class EMSEnvironment:
         }
         
         return StepResult(observation, reward, done, info)
+
+    def get_optimal_action(self) -> Optional[int]:
+        """
+        validation_simulation.pyと同じ最近接選択を実装
+        学習初期の比較用
+        """
+        if self.pending_call is None:
+            return None
+        
+        best_action = None
+        min_travel_time = float('inf')
+        
+        for amb_id, amb_state in self.ambulance_states.items():
+            if amb_state['status'] != 'available':
+                continue
+            
+            travel_time = self._calculate_travel_time(
+                amb_state['current_h3'],
+                self.pending_call['h3_index']
+            )
+            
+            if travel_time < min_travel_time:
+                min_travel_time = travel_time
+                best_action = amb_id
+        
+        return best_action
+
+    def step(self, action: int) -> StepResult:
+        """
+        デバッグ用: 最適行動との比較を出力
+        """
+        if self.verbose_logging:
+            optimal_action = self.get_optimal_action()
+            if optimal_action is not None and action != optimal_action:
+                optimal_time = self._calculate_travel_time(
+                    self.ambulance_states[optimal_action]['current_h3'],
+                    self.pending_call['h3_index']
+                )
+                actual_time = self._calculate_travel_time(
+                    self.ambulance_states[action]['current_h3'],
+                    self.pending_call['h3_index']
+                )
+                print(f"[選択比較] PPO選択: 救急車{action}({actual_time/60:.1f}分) "
+                    f"vs 最適: 救急車{optimal_action}({optimal_time/60:.1f}分)")
     
     def _dispatch_ambulance(self, action: int) -> Dict:
         """救急車を配車"""
@@ -311,7 +523,7 @@ class EMSEnvironment:
         if amb_state['status'] != 'available':
             return {'success': False, 'reason': 'ambulance_busy'}
         
-        # 移動時間の計算
+        # 移動時間の計算（修正版）
         travel_time = self._calculate_travel_time(
             amb_state['current_h3'],
             self.pending_call['h3_index']
@@ -338,22 +550,39 @@ class EMSEnvironment:
         
         return result
     
+    # _calculate_travel_timeメソッドの修正
     def _calculate_travel_time(self, from_h3: str, to_h3: str) -> float:
-        """移動時間を計算（秒）"""
-        # グリッドマッピングからインデックスを取得
+        """
+        移動時間を計算（秒単位）
+        ValidationSimulatorのget_travel_timeと同じロジックを使用
+        """
+        # phaseは'response'をデフォルトとする（救急車選択時）
+        phase = 'response'
+        
         from_idx = self.grid_mapping.get(from_h3)
         to_idx = self.grid_mapping.get(to_h3)
         
         if from_idx is None or to_idx is None:
+            # グリッドマッピングにない場合のフォールバック
             return 600.0  # デフォルト10分
         
         # 移動時間行列から取得
-        if 'response' in self.travel_time_matrices:
-            travel_time = self.travel_time_matrices['response'][from_idx, to_idx]
-        else:
-            travel_time = 600.0  # デフォルト
+        current_travel_time_matrix = self.travel_time_matrices.get(phase)
         
-        return travel_time
+        if current_travel_time_matrix is None:
+            # responseフェーズの行列がない場合
+            return 600.0  # デフォルト10分
+        
+        try:
+            travel_time = current_travel_time_matrix[from_idx, to_idx]
+            
+            # 異常値チェック（ValidationSimulatorにはないが、安全のため）
+            if travel_time <= 0 or travel_time > 3600:  # 1時間以上は異常
+                return 600.0  # デフォルト10分
+            
+            return travel_time
+        except:
+            return 600.0  # エラー時のデフォルト
     
     def _schedule_ambulance_return(self, amb_id: int, return_time: int):
         """救急車の帰還をスケジュール"""
@@ -369,14 +598,11 @@ class EMSEnvironment:
         severity = dispatch_result['severity']
         response_time = dispatch_result['response_time']
         
-        # 報酬設計クラスを使用
-        from .reward_designer import RewardDesigner
-        reward_designer = RewardDesigner(self.config)
-        
-        reward = reward_designer.calculate_reward(
+        # 既に初期化済みのreward_designerを使用
+        reward = self.reward_designer.calculate_reward(
             severity=severity,
             response_time=response_time,
-            coverage_impact=0.0  # 簡易版では0
+            coverage_impact=0.0
         )
         
         return reward
@@ -437,12 +663,36 @@ class EMSEnvironment:
     def _is_episode_done(self) -> bool:
         """エピソード終了判定"""
         # 全事案を処理したら終了
-        return self.pending_call is None or self.episode_step >= self.max_steps_per_episode
+        if self.pending_call is None:
+            return True
+        
+        # ステップ数が最大値を超えたら終了
+        if self.episode_step >= len(self.current_episode_calls):
+            return True
+        
+        # 設定された最大ステップ数を超えたら終了（オプション）
+        max_steps = self.config.get('max_steps_per_episode', 1000)
+        if self.episode_step >= max_steps:
+            return True
+        
+        return False
     
     def _get_observation(self) -> np.ndarray:
         """現在の観測を取得"""
         # 状態エンコーダを使用
         from .state_encoder import StateEncoder
+        
+        # configにnetworkセクションがない場合のデフォルト値
+        if 'network' not in self.config:
+            self.config['network'] = {
+                'state_encoder': {
+                    'ambulance_features': 4,
+                    'incident_features': 10,
+                    'spatial_features': 20,
+                    'temporal_features': 8
+                }
+            }
+        
         encoder = StateEncoder(self.config)
         
         state_dict = {
@@ -484,6 +734,33 @@ class EMSEnvironment:
                 mask[amb_id] = True
         
         return mask
+ 
+    def get_best_action_for_call(self) -> Optional[int]:
+        """
+        現在の事案に対して最適な救急車（行動）を選択
+        学習初期はこれを教師として使用できる
+        """
+        if self.pending_call is None:
+            return None
+        
+        best_action = None
+        min_travel_time = float('inf')
+        
+        for amb_id, amb_state in self.ambulance_states.items():
+            if amb_state['status'] != 'available':
+                continue
+            
+            # 移動時間を計算
+            travel_time = self._calculate_travel_time(
+                amb_state['current_h3'],
+                self.pending_call['h3_index']
+            )
+            
+            if travel_time < min_travel_time:
+                min_travel_time = travel_time
+                best_action = amb_id
+        
+        return best_action
     
     def render(self, mode: str = 'human'):
         """環境の可視化（オプション）"""

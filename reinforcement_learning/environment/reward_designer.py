@@ -12,6 +12,7 @@ class RewardDesigner:
     多目的最適化を考慮した報酬設計
     """
     
+    # reward_designer.py
     def __init__(self, config: Dict):
         """
         Args:
@@ -28,8 +29,10 @@ class RewardDesigner:
             for condition in info['conditions']:
                 self.severity_to_category[condition] = category
         
-        print("報酬設計初期化完了")
-        print(f"重症系（同一重み）: {self.severity_config['categories']['critical']['conditions']}")
+        # 初期化メッセージは1回だけ（verboseフラグで制御）
+        if config.get('verbose', False):
+            print("報酬設計初期化完了")
+            print(f"重症系（同一重み）: {self.severity_config['categories']['critical']['conditions']}")
         
     def calculate_reward(self,
                         severity: str,
