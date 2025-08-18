@@ -24,8 +24,8 @@ from reinforcement_learning.training.trainer import PPOTrainer
 
 def setup_directories(experiment_name: str) -> Path:
     """実験用ディレクトリの設定"""
-    # 基本ディレクトリ
-    base_dir = Path("experiments") / "ppo_training" / experiment_name
+    # 基本ディレクトリ（reinforcement_learning/experiments以下に配置）
+    base_dir = Path("reinforcement_learning") / "experiments" / "ppo_training" / experiment_name
     base_dir.mkdir(parents=True, exist_ok=True)
     
     # サブディレクトリ
