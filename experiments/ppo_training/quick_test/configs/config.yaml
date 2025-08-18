@@ -16,7 +16,7 @@ evaluation:
   - 13min_achievement_rate
   n_eval_episodes: 2
 experiment:
-  device: cuda
+  device: cpu
   name: ppo_quick_test
   seed: 42
 network:

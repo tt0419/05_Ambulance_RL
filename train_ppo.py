@@ -124,7 +124,31 @@ def main():
     
     # 設定ファイルの読み込み
     print(f"\n設定ファイル読み込み: {args.config}")
-    with open(args.config, 'r', encoding='utf-8') as f:
+    
+    # パスの解決
+    config_path = args.config
+    if not os.path.exists(config_path):
+        # reinforcement_learning/ サブディレクトリを含むパスを試す
+        alt_config_path = f"reinforcement_learning/{config_path}"
+        if os.path.exists(alt_config_path):
+            config_path = alt_config_path
+            print(f"設定ファイルパス修正: {config_path}")
+        else:
+            print(f"❌ 設定ファイルが見つかりません:")
+            print(f"   試行1: {args.config}")
+            print(f"   試行2: {alt_config_path}")
+            print(f"   現在のディレクトリ: {os.getcwd()}")
+            print(f"   利用可能な設定ファイル:")
+            
+            # 利用可能な設定ファイルを探して表示
+            for root, dirs, files in os.walk('.'):
+                for file in files:
+                    if file.endswith('.yaml') and 'config' in file:
+                        print(f"     {os.path.join(root, file)}")
+            
+            sys.exit(1)
+    
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
     # デバイスの設定

@@ -70,45 +70,57 @@ def debug_environment():
     available_actions = np.where(action_mask)[0]
     print(f"利用可能な救急車ID: {available_actions[:10]}...")
     
-    # ❌ 現在の問題のあるコード
-    # action = available_actions[0]  # 常に最初の救急車
-    
-    # ✅ 修正案1: ランダム選択（PPOの初期状態を模擬）
-    action = np.random.choice(available_actions)
-    
-    # ✅ 修正案2: 最近接選択（validation_simulation.pyと同じ）
+    # 最近接救急車を選択
     best_action = None
     min_time = float('inf')
-    for amb_id in available_actions:
-        travel_time = env._calculate_travel_time(
-            env.ambulance_states[amb_id]['current_h3'],
-            env.pending_call['h3_index']
-        )
-        if travel_time < min_time:
-            min_time = travel_time
-            best_action = amb_id
-    action = best_action if best_action is not None else available_actions[0]
     
+    for amb_id in available_actions:
+        if amb_id in env.ambulance_states:  # 存在確認
+            travel_time = env._calculate_travel_time(
+                env.ambulance_states[amb_id]['current_h3'],
+                env.pending_call['h3_index']
+            )
+            if travel_time < min_time:
+                min_time = travel_time
+                best_action = amb_id
+    
+    # フォールバック：最適な救急車が見つからない場合
+    if best_action is None:
+        best_action = available_actions[0]
+        print(f"警告: 最適な救急車が見つからないため、最初の利用可能な救急車を選択")
+    
+    action = best_action
     print(f"選択した救急車: {action} (移動時間: {min_time/60:.1f}分)")
     
-    # ステップ実行
+    # 7. ステップ実行
     print("\n7. ステップ実行")
-    step_result = env.step(action)
-    
-    print(f"報酬: {step_result.reward}")
-    print(f"終了フラグ: {step_result.done}")
-    print(f"追加情報: {step_result.info}")
-    
-    # dispatch_resultの詳細確認
-    if 'dispatch_result' in step_result.info:
-        dr = step_result.info['dispatch_result']
-        print(f"\n配車結果詳細:")
-        print(f"  成功: {dr.get('success', False)}")
-        if not dr.get('success'):
-            print(f"  失敗理由: {dr.get('reason', '不明')}")
-        else:
-            print(f"  応答時間: {dr.get('response_time', 0):.1f}秒")
-            print(f"  応答時間（分）: {dr.get('response_time_minutes', 0):.1f}分")
+    try:
+        step_result = env.step(action)
+        
+        if step_result is None:
+            print("エラー: step_resultがNoneです")
+            return
+        
+        print(f"報酬: {step_result.reward}")
+        print(f"終了フラグ: {step_result.done}")
+        print(f"追加情報: {step_result.info}")
+        
+        # dispatch_resultの詳細確認
+        if 'dispatch_result' in step_result.info:
+            dr = step_result.info['dispatch_result']
+            print(f"\n配車結果詳細:")
+            print(f"  成功: {dr.get('success', False)}")
+            if not dr.get('success'):
+                print(f"  失敗理由: {dr.get('reason', '不明')}")
+            else:
+                print(f"  応答時間: {dr.get('response_time', 0):.1f}秒")
+                print(f"  応答時間（分）: {dr.get('response_time_minutes', 0):.1f}分")
+
+    except Exception as e:
+        print(f"ステップ実行でエラー: {e}")
+        import traceback
+        traceback.print_exc()
+        return
     
     # エピソード統計
     print("\n8. エピソード統計")
@@ -134,6 +146,16 @@ def debug_environment():
         action = available_actions[0]
         step_result = env.step(action)
         print(f"ステップ {i+1}: 報酬={step_result.reward:.2f}, 終了={step_result.done}")
+    
+    # 追加ステップ実行後の統計
+    print("\n10. 最終エピソード統計")
+    final_stats = env.episode_stats
+    print(f"総配車数: {final_stats['total_dispatches']}")
+    print(f"失敗配車数: {final_stats['failed_dispatches']}")
+    if final_stats['response_times']:
+        print(f"平均応答時間: {np.mean(final_stats['response_times']):.1f}分")
+        print(f"6分達成率: {final_stats['achieved_6min']/final_stats['total_dispatches']*100:.1f}%")
+        print(f"13分達成率: {final_stats['achieved_13min']/final_stats['total_dispatches']*100:.1f}%")
 
 def check_data_loading():
     """データ読み込みの確認"""
@@ -141,11 +163,21 @@ def check_data_loading():
     print("データ読み込み確認")
     print("=" * 60)
     
-    # 救急事案データの確認
-    calls_path = "C:/Users/hp/OneDrive - Yokohama City University/30_データカタログ/tfd_data/hanso_special_wards.csv"
+    # 救急事案データの確認（両方のユーザーに対応）
+    possible_paths = [
+        "C:/Users/tetsu/OneDrive - Yokohama City University/30_データカタログ/tfd_data/hanso_special_wards.csv",
+        "C:/Users/hp/OneDrive - Yokohama City University/30_データカタログ/tfd_data/hanso_special_wards.csv"
+    ]
     
-    if not os.path.exists(calls_path):
-        print(f"❌ データファイルが見つかりません: {calls_path}")
+    calls_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            calls_path = path
+            print(f"✓ データファイル発見: {path}")
+            break
+    
+    if calls_path is None:
+        print("❌ データファイルが見つかりません")
         return
     
     print(f"✓ データファイル存在確認")
@@ -173,6 +205,7 @@ def check_data_loading():
             print(f"  {severity}: {count}")
         
         # 時間帯分布
+        day_data = day_data.copy()  # 警告回避
         day_data['hour'] = day_data['出場年月日時分'].dt.hour
         hour_counts = day_data['hour'].value_counts().sort_index()
         print(f"\n時間帯分布:")
@@ -214,6 +247,11 @@ def test_small_episode():
         # ステップ実行
         step_result = env.step(action)
         
+        if step_result is None:
+            print(f"ステップ {step}: step_resultがNoneです。環境をリセットします。")
+            state = env.reset()
+            continue
+        
         total_reward += step_result.reward
         steps += 1
         
@@ -244,14 +282,23 @@ def main():
     print("\n環境デバッグツール")
     print("=" * 60)
     
-    # 1. データ確認
-    check_data_loading()
-    
-    # 2. 環境詳細デバッグ
-    debug_environment()
-    
-    # 3. エピソードテスト
-    test_small_episode()
+    try:
+        # 1. データ確認
+        print("\n=== ステップ1: データ読み込み確認 ===")
+        check_data_loading()
+        
+        # 2. 小規模エピソードテスト
+        print("\n=== ステップ2: 小規模エピソードテスト ===")
+        test_small_episode()
+        
+        # 3. 詳細な環境デバッグ（最後に実行）
+        print("\n=== ステップ3: 詳細環境デバッグ ===")
+        debug_environment()
+        
+    except Exception as e:
+        print(f"\n❌ デバッグ中にエラーが発生しました: {e}")
+        import traceback
+        traceback.print_exc()
     
     print("\n" + "=" * 60)
     print("デバッグ完了")

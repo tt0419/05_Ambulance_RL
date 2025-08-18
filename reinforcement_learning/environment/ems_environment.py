@@ -437,37 +437,64 @@ class EMSEnvironment:
         Returns:
             StepResult: 観測、報酬、終了フラグ、追加情報
         """
-        # 行動の実行（救急車の配車）
-        dispatch_result = self._dispatch_ambulance(action)
-        
-        # 報酬の計算
-        reward = self._calculate_reward(dispatch_result)
-        
-        # 統計情報の更新
-        self._update_statistics(dispatch_result)
-        
-        # 次の事案へ進む
-        self._advance_to_next_call()
-        
-        # エピソード終了判定
-        done = self._is_episode_done()
-        
-        # 次の観測を取得
-        observation = self._get_observation()
-        
-        # 追加情報
-        info = {
-            'dispatch_result': dispatch_result,
-            'episode_stats': self.episode_stats.copy(),
-            'step': self.episode_step
-        }
-        
-        return StepResult(observation, reward, done, info)
+        try:
+            # デバッグ用: 最適行動との比較を出力
+            if hasattr(self, 'verbose_logging') and self.verbose_logging:
+                optimal_action = self.get_optimal_action()
+                if optimal_action is not None and action != optimal_action:
+                    optimal_time = self._calculate_travel_time(
+                        self.ambulance_states[optimal_action]['current_h3'],
+                        self.pending_call['h3_index']
+                    )
+                    actual_time = self._calculate_travel_time(
+                        self.ambulance_states[action]['current_h3'],
+                        self.pending_call['h3_index']
+                    )
+                    print(f"[選択比較] PPO選択: 救急車{action}({actual_time/60:.1f}分) "
+                        f"vs 最適: 救急車{optimal_action}({optimal_time/60:.1f}分)")
+            
+            # 行動の実行（救急車の配車）
+            dispatch_result = self._dispatch_ambulance(action)
+            
+            # 報酬の計算
+            reward = self._calculate_reward(dispatch_result)
+            
+            # 統計情報の更新
+            self._update_statistics(dispatch_result)
+            
+            # 次の事案へ進む
+            self._advance_to_next_call()
+            
+            # エピソード終了判定
+            done = self._is_episode_done()
+            
+            # 次の観測を取得
+            observation = self._get_observation()
+            
+            # 追加情報
+            info = {
+                'dispatch_result': dispatch_result,
+                'episode_stats': self.episode_stats.copy(),
+                'step': self.episode_step
+            }
+            
+            # StepResultオブジェクトを返す
+            return StepResult(
+                observation=observation,
+                reward=reward,
+                done=done,
+                info=info
+            )
+        except Exception as e:
+            print(f"❌ step()メソッドでエラー発生: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     def get_optimal_action(self) -> Optional[int]:
         """
-        validation_simulation.pyと同じ最近接選択を実装
-        学習初期の比較用
+        現在の事案に対して最適な救急車を選択（最近接）
+        validation_simulation.pyと同じロジック
         """
         if self.pending_call is None:
             return None
@@ -475,38 +502,32 @@ class EMSEnvironment:
         best_action = None
         min_travel_time = float('inf')
         
+        # 各救急車の移動時間を計算
         for amb_id, amb_state in self.ambulance_states.items():
             if amb_state['status'] != 'available':
                 continue
             
-            travel_time = self._calculate_travel_time(
-                amb_state['current_h3'],
-                self.pending_call['h3_index']
-            )
-            
-            if travel_time < min_travel_time:
-                min_travel_time = travel_time
-                best_action = amb_id
+            try:
+                travel_time = self._calculate_travel_time(
+                    amb_state['current_h3'],
+                    self.pending_call['h3_index']
+                )
+                
+                if travel_time < min_travel_time:
+                    min_travel_time = travel_time
+                    best_action = amb_id
+                    
+            except Exception as e:
+                if self.verbose_logging:
+                    print(f"警告: 救急車{amb_id}の移動時間計算でエラー: {e}")
+                continue
+        
+        if best_action is not None and self.verbose_logging:
+            print(f"最適な救急車: {best_action} (移動時間: {min_travel_time/60:.1f}分)")
         
         return best_action
 
-    def step(self, action: int) -> StepResult:
-        """
-        デバッグ用: 最適行動との比較を出力
-        """
-        if self.verbose_logging:
-            optimal_action = self.get_optimal_action()
-            if optimal_action is not None and action != optimal_action:
-                optimal_time = self._calculate_travel_time(
-                    self.ambulance_states[optimal_action]['current_h3'],
-                    self.pending_call['h3_index']
-                )
-                actual_time = self._calculate_travel_time(
-                    self.ambulance_states[action]['current_h3'],
-                    self.pending_call['h3_index']
-                )
-                print(f"[選択比較] PPO選択: 救急車{action}({actual_time/60:.1f}分) "
-                    f"vs 最適: 救急車{optimal_action}({optimal_time/60:.1f}分)")
+
     
     def _dispatch_ambulance(self, action: int) -> Dict:
         """救急車を配車"""
