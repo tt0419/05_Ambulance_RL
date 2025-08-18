@@ -27,6 +27,15 @@ from validation_simulation import (
     Event
 )
 
+# 設定ユーティリティのインポート
+try:
+    from ..config_utils import load_config_with_inheritance
+except ImportError:
+    # スタンドアロン実行時のフォールバック
+    import sys
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from config_utils import load_config_with_inheritance
+
 @dataclass
 class StepResult:
     """ステップ実行結果"""
@@ -47,9 +56,8 @@ class EMSEnvironment:
             config_path: 設定ファイルのパス
             mode: "train" or "eval"
         """
-        # 設定読み込み
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = yaml.safe_load(f)
+        # 設定読み込み（継承機能付き）
+        self.config = load_config_with_inheritance(config_path)
         
         self.mode = mode
         self.current_period_idx = 0
@@ -494,7 +502,10 @@ class EMSEnvironment:
     def get_optimal_action(self) -> Optional[int]:
         """
         現在の事案に対して最適な救急車を選択（最近接）
-        validation_simulation.pyと同じロジック
+        ValidationSimulatorのfind_closest_available_ambulanceと同じロジック
+        
+        Returns:
+            最適な救急車のID、または None
         """
         if self.pending_call is None:
             return None
@@ -502,28 +513,31 @@ class EMSEnvironment:
         best_action = None
         min_travel_time = float('inf')
         
-        # 各救急車の移動時間を計算
+        # 全ての救急車をチェック
         for amb_id, amb_state in self.ambulance_states.items():
+            # 利用可能な救急車のみ対象
             if amb_state['status'] != 'available':
                 continue
             
             try:
+                # 現在位置から事案発生地点への移動時間を計算
                 travel_time = self._calculate_travel_time(
                     amb_state['current_h3'],
                     self.pending_call['h3_index']
                 )
                 
+                # より近い救急車を発見
                 if travel_time < min_travel_time:
                     min_travel_time = travel_time
                     best_action = amb_id
                     
             except Exception as e:
-                if self.verbose_logging:
-                    print(f"警告: 救急車{amb_id}の移動時間計算でエラー: {e}")
+                # エラーが発生した場合はスキップ
                 continue
         
-        if best_action is not None and self.verbose_logging:
-            print(f"最適な救急車: {best_action} (移動時間: {min_travel_time/60:.1f}分)")
+        # デバッグ情報の出力（verboseモード時）
+        if best_action is not None and hasattr(self, 'verbose_logging') and self.verbose_logging:
+            print(f"[最適選択] 救急車{best_action}を選択 (移動時間: {min_travel_time/60:.1f}分)")
         
         return best_action
 

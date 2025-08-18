@@ -122,19 +122,22 @@ class CriticNetwork(nn.Module):
             prev_dim = hidden_dim
         
         # 最終層（状態価値出力）
-        layers.append(nn.Linear(prev_dim, 1))
-        
-        self.network = nn.Sequential(*layers)
+        self.feature_layers = nn.Sequential(*layers)
+        self.value_head = nn.Linear(prev_dim, 1)
         
         # 重み初期化
         self._initialize_weights()
     
     def _initialize_weights(self):
-        """重みの初期化"""
-        for module in self.modules():
+        """重みの初期化（修正版）"""
+        for module in self.feature_layers.modules():
             if isinstance(module, nn.Linear):
                 nn.init.orthogonal_(module.weight, gain=np.sqrt(2))
                 nn.init.constant_(module.bias, 0.0)
+        
+        # 最終層の初期化を小さくする（重要！）
+        nn.init.orthogonal_(self.value_head.weight, gain=0.01)  # gain を小さく
+        nn.init.constant_(self.value_head.bias, 0.0)
     
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         """
@@ -146,7 +149,8 @@ class CriticNetwork(nn.Module):
         Returns:
             value: 状態価値 [batch_size, 1]
         """
-        value = self.network(state)
+        features = self.feature_layers(state)
+        value = self.value_head(features)
         return value
 
 

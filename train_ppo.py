@@ -20,6 +20,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from reinforcement_learning.environment.ems_environment import EMSEnvironment
 from reinforcement_learning.agents.ppo_agent import PPOAgent
 from reinforcement_learning.training.trainer import PPOTrainer
+from reinforcement_learning.config_utils import load_config_with_inheritance
 
 
 def setup_directories(experiment_name: str) -> Path:
@@ -148,8 +149,8 @@ def main():
             
             sys.exit(1)
     
-    with open(config_path, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
+    # 設定ファイルの読み込みと継承処理
+    config = load_config_with_inheritance(config_path)
     
     # デバイスの設定
     if args.device:
@@ -198,7 +199,7 @@ def main():
     try:
         # 環境の初期化
         print("\n環境を初期化中...")
-        env = EMSEnvironment(args.config, mode="train")
+        env = EMSEnvironment(config_path, mode="train")
         
         # 状態次元の取得
         initial_state = env.reset()

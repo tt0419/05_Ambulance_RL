@@ -136,6 +136,54 @@ class PPOAgent:
             value = self.critic(state_tensor).squeeze().item()
         
         return action, log_prob.item(), value
+
+    def select_action_with_teacher(self, 
+                                state: np.ndarray,
+                                action_mask: Optional[np.ndarray],
+                                optimal_action: Optional[int],
+                                teacher_prob: float = 0.5,
+                                deterministic: bool = False) -> Tuple[int, float, float]:
+        """
+        教師あり学習を混合した行動選択
+        学習初期は最適行動を模倣し、徐々にPPOの探索に移行
+        
+        Args:
+            state: 状態ベクトル
+            action_mask: 利用可能な行動のマスク
+            optimal_action: 教師が示す最適行動
+            teacher_prob: 教師の行動を選択する確率（0.0-1.0）
+            deterministic: 決定的選択フラグ
+            
+        Returns:
+            action: 選択された行動
+            log_prob: 対数確率
+            value: 状態価値
+        """
+        # 教師の行動が利用可能で、確率的に教師を選択
+        if optimal_action is not None and np.random.random() < teacher_prob:
+            # 教師の行動を選択
+            action = optimal_action
+            
+            # その行動の対数確率と価値を計算
+            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            
+            with torch.no_grad():
+                # Actor出力
+                action_probs = self.actor(state_tensor)
+                
+                # 選択された行動の確率
+                if action < action_probs.shape[1]:
+                    log_prob = torch.log(action_probs[0, action] + 1e-8).item()
+                else:
+                    log_prob = -10.0  # 範囲外の場合のペナルティ
+                
+                # Critic出力
+                value = self.critic(state_tensor).squeeze().item()
+            
+            return action, log_prob, value
+        else:
+            # 通常のPPO選択
+            return self.select_action(state, action_mask, deterministic)
     
     def update(self) -> Dict[str, float]:
         """

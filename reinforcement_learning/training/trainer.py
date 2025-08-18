@@ -138,12 +138,13 @@ class PPOTrainer:
         self.agent.save(self.output_dir / "final_model.pth")
         self._save_training_stats()
         
-    def _run_episode(self, training: bool = True) -> Tuple[float, int, Dict]:
+    def _run_episode(self, training: bool = True, use_teacher: bool = True) -> Tuple[float, int, Dict]:
         """
-        1エピソードを実行
+        1エピソードを実行（教師あり学習オプション付き）
         
         Args:
             training: 学習モードフラグ
+            use_teacher: 教師あり学習を使用するか
             
         Returns:
             episode_reward: エピソード報酬
@@ -154,14 +155,38 @@ class PPOTrainer:
         episode_reward = 0.0
         episode_length = 0
         
+        # 学習の進行に応じて教師の使用率を減らす
+        if use_teacher and training:
+            # エピソード数に応じて教師確率を減衰
+            current_episode = len(self.episode_rewards)
+            # 最初は80%、1000エピソードで20%まで減衰
+            teacher_prob = max(0.2, 0.8 - (current_episode / 1000) * 0.6)
+        else:
+            teacher_prob = 0.0
+        
         while True:
             # 行動選択
             action_mask = self.env.get_action_mask()
-            action, log_prob, value = self.agent.select_action(
-                state, 
-                action_mask,
-                deterministic=not training
-            )
+            
+            if training and use_teacher:
+                # 最適行動を取得
+                optimal_action = self.env.get_optimal_action()
+                
+                # 教師あり混合選択
+                action, log_prob, value = self.agent.select_action_with_teacher(
+                    state, 
+                    action_mask,
+                    optimal_action,
+                    teacher_prob,
+                    deterministic=not training
+                )
+            else:
+                # 通常のPPO選択
+                action, log_prob, value = self.agent.select_action(
+                    state, 
+                    action_mask,
+                    deterministic=not training
+                )
             
             # 環境ステップ
             step_result = self.env.step(action)
