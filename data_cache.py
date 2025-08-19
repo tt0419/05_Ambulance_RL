@@ -64,7 +64,7 @@ class EmergencyDataCache:
         # キャッシュの確認
         if not force_reload and not self._should_reload_cache(file_path):
             self.logger.info("キャッシュからデータを取得")
-            return self._cached_data.copy()
+            return self._cached_data  # copy()を削除してメモリ使用量を削減
         
         # データの読み込み
         self.logger.info(f"CSVファイルを読み込み中: {os.path.basename(file_path)}")
@@ -97,6 +97,23 @@ class EmergencyDataCache:
             if before_coord > len(df):
                 self.logger.info(f"無効な座標データを除外: {before_coord - len(df)}件")
             
+            # データ型の最適化（メモリ使用量削減）
+            print("データ型を最適化中...")
+            if 'Y_CODE' in df.columns:
+                df['Y_CODE'] = pd.to_numeric(df['Y_CODE'], errors='coerce').astype('float32')
+            if 'X_CODE' in df.columns:
+                df['X_CODE'] = pd.to_numeric(df['X_CODE'], errors='coerce').astype('float32')
+            
+            # 文字列カラムのカテゴリ化
+            if '収容所見程度' in df.columns:
+                df['収容所見程度'] = df['収容所見程度'].astype('category')
+            if '救急事案番号キー' in df.columns:
+                df['救急事案番号キー'] = df['救急事案番号キー'].astype('string')
+            
+            # メモリ使用量を表示
+            memory_usage_mb = df.memory_usage(deep=True).sum() / 1024 / 1024
+            print(f"メモリ使用量最適化完了 (約{memory_usage_mb:.1f}MB)")
+            
             # キャッシュに保存
             self._cached_data = df
             self._cache_file_path = file_path
@@ -105,7 +122,7 @@ class EmergencyDataCache:
             end_time = pd.Timestamp.now()
             self.logger.info(f"データ処理完了: {len(df):,}件 (処理時間: {(end_time - start_time).total_seconds():.2f}秒)")
             
-            return df.copy()
+            return df  # copy()を削除してメモリ使用量を削減
             
         except Exception as e:
             self.logger.error(f"データ読み込みエラー: {e}")
@@ -135,9 +152,9 @@ class EmergencyDataCache:
         start_datetime = pd.to_datetime(start_date_str)
         end_datetime = pd.to_datetime(end_date_str) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
         
-        # 期間でフィルタリング
+        # 期間でフィルタリング（メモリ効率版）
         mask = (df['出場年月日時分'] >= start_datetime) & (df['出場年月日時分'] <= end_datetime)
-        filtered_df = df[mask].copy()
+        filtered_df = df[mask]  # copy()を削除してメモリ使用量を削減
         
         self.logger.info(f"期間 {start_date_str} ～ {end_date_str}: {len(filtered_df)}件")
         
@@ -157,9 +174,9 @@ class EmergencyDataCache:
         # キャッシュからデータを取得
         df = self.load_data()
         
-        # 日時範囲でフィルタリング
+        # 日時範囲でフィルタリング（メモリ効率版）
         mask = (df['出場年月日時分'] >= start_datetime) & (df['出場年月日時分'] < end_datetime)
-        filtered_df = df[mask].copy()
+        filtered_df = df[mask]  # copy()を削除してメモリ使用量を削減
         
         self.logger.info(f"日時範囲 {start_datetime} ～ {end_datetime}: {len(filtered_df)}件")
         

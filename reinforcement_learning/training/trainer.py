@@ -68,11 +68,19 @@ class PPOTrainer:
         self.use_wandb = config['training']['logging']['wandb']
         
         if self.use_wandb:
-            wandb.init(
-                project="ems-ppo",
-                name=output_dir.name,
-                config=config
-            )
+            try:
+                print("WandB初期化中...")
+                wandb.init(
+                    project="ems-ppo",
+                    name=output_dir.name,
+                    config=config,
+                    settings=wandb.Settings(init_timeout=180)  # タイムアウトを180秒に延長
+                )
+                print("✓ WandB初期化完了")
+            except Exception as e:
+                print(f"⚠️ WandB初期化に失敗しました: {e}")
+                print("WandBを無効にして学習を続行します...")
+                self.use_wandb = False
         
         print(f"PPOトレーナー初期化完了")
         print(f"  総エピソード数: {self.n_episodes}")

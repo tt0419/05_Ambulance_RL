@@ -1,0 +1,244 @@
+{
+  "experiment": {
+    "name": "ppo_scaled_experiment",
+    "seed": 42,
+    "device": "cuda"
+  },
+  "data": {
+    "train_periods": [
+      {
+        "start_date": "20230401",
+        "end_date": "20230407"
+      },
+      {
+        "start_date": "20230410",
+        "end_date": "20230416"
+      },
+      {
+        "start_date": "20230420",
+        "end_date": "20230426"
+      }
+    ],
+    "eval_periods": [
+      {
+        "start_date": "20230408",
+        "end_date": "20230409"
+      },
+      {
+        "start_date": "20230417",
+        "end_date": "20230418"
+      },
+      {
+        "start_date": "20230427",
+        "end_date": "20230428"
+      }
+    ],
+    "episode_duration_hours": 12
+  },
+  "severity": {
+    "categories": {
+      "critical": {
+        "conditions": [
+          "重篤",
+          "重症",
+          "死亡"
+        ],
+        "reward_weight": 5.0,
+        "time_limit_seconds": 360
+      },
+      "moderate": {
+        "conditions": [
+          "中等症"
+        ],
+        "reward_weight": 2.0,
+        "time_limit_seconds": 480
+      },
+      "mild": {
+        "conditions": [
+          "軽症"
+        ],
+        "reward_weight": 1.0,
+        "time_limit_seconds": 780
+      }
+    },
+    "thresholds": {
+      "golden_time": 360,
+      "standard_time": 780
+    }
+  },
+  "ppo": {
+    "n_episodes": 2000,
+    "n_epochs": 8,
+    "batch_size": 64,
+    "clip_epsilon": 0.15,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "learning_rate": {
+      "actor": 0.0003,
+      "critic": 0.0005,
+      "scheduler": "cosine_with_restarts"
+    },
+    "entropy_coef": 0.02,
+    "value_coef": 0.5,
+    "max_grad_norm": 0.5
+  },
+  "reward": {
+    "weights": {
+      "response_time": -0.8,
+      "severity_bonus": 4.0,
+      "threshold_penalty": -8.0,
+      "coverage_preservation": 1.0,
+      "efficiency_bonus": 0.3
+    },
+    "penalties": {
+      "over_6min": -3.0,
+      "over_13min": -15.0,
+      "per_minute_over": -0.8,
+      "resource_waste": -0.2
+    },
+    "bonuses": {
+      "under_6min_critical": 5.0,
+      "under_3min_critical": 8.0,
+      "resource_efficiency": 2.0
+    }
+  },
+  "network": {
+    "state_encoder": {
+      "ambulance_features": 12,
+      "incident_features": 8,
+      "spatial_features": 24,
+      "temporal_features": 12
+    },
+    "actor": {
+      "hidden_layers": [
+        512,
+        256,
+        128,
+        64
+      ],
+      "activation": "relu",
+      "dropout": 0.15,
+      "batch_norm": true
+    },
+    "critic": {
+      "hidden_layers": [
+        512,
+        256,
+        128
+      ],
+      "activation": "relu",
+      "dropout": 0.15,
+      "batch_norm": true
+    }
+  },
+  "training": {
+    "checkpoint_interval": 50,
+    "keep_last_n": 10,
+    "early_stopping": {
+      "enabled": true,
+      "patience": 200,
+      "min_delta": 0.0005,
+      "restore_best_weights": true
+    },
+    "logging": {
+      "interval": 5,
+      "tensorboard": true,
+      "wandb": true,
+      "save_model_every": 100
+    },
+    "curriculum": {
+      "enabled": true,
+      "stages": [
+        {
+          "episodes": 500,
+          "episode_duration_hours": 6,
+          "difficulty": "easy"
+        },
+        {
+          "episodes": 1000,
+          "episode_duration_hours": 9,
+          "difficulty": "medium"
+        },
+        {
+          "episodes": 500,
+          "episode_duration_hours": 12,
+          "difficulty": "hard"
+        }
+      ]
+    }
+  },
+  "evaluation": {
+    "interval": 25,
+    "n_eval_episodes": 10,
+    "detailed_analysis_interval": 100,
+    "metrics": [
+      "mean_response_time",
+      "response_time_by_severity",
+      "6min_achievement_rate",
+      "13min_achievement_rate", 
+      "critical_6min_rate",
+      "resource_utilization",
+      "spatial_coverage",
+      "temporal_distribution",
+      "severity_specific_performance"
+    ],
+    "compare_baselines": [
+      "closest",
+      "severity_based",
+      "advanced_severity"
+    ],
+    "stress_tests": {
+      "enabled": true,
+      "scenarios": [
+        "high_demand_peak",
+        "emergency_clustering",
+        "resource_shortage"
+      ]
+    }
+  },
+  "teacher": {
+    "enabled": true,
+    "initial_prob": 0.9,
+    "final_prob": 0.1,
+    "decay_episodes": 800,
+    "decay_schedule": "exponential",
+    "expert_strategies": [
+      "severity_based",
+      "closest"
+    ]
+  },
+  "regularization": {
+    "weight_decay": 0.0001,
+    "action_noise": {
+      "enabled": true,
+      "initial_std": 0.1,
+      "final_std": 0.01,
+      "decay_episodes": 1000
+    },
+    "exploration_bonus": {
+      "enabled": true,
+      "coefficient": 0.1
+    }
+  },
+  "advanced": {
+    "multi_objective": {
+      "enabled": true,
+      "objectives": [
+        "response_time",
+        "equity",
+        "resource_efficiency"
+      ],
+      "weights": [0.6, 0.25, 0.15]
+    },
+    "adaptive_learning": {
+      "enabled": true,
+      "learning_rate_adaptation": true,
+      "batch_size_adaptation": true
+    },
+    "memory_replay": {
+      "enabled": false,
+      "buffer_size": 10000,
+      "sample_ratio": 0.1
+    }
+  }
+}-
