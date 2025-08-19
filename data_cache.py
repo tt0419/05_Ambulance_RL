@@ -152,9 +152,17 @@ class EmergencyDataCache:
         start_datetime = pd.to_datetime(start_date_str)
         end_datetime = pd.to_datetime(end_date_str) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
         
-        # 期間でフィルタリング（メモリ効率版）
-        mask = (df['出場年月日時分'] >= start_datetime) & (df['出場年月日時分'] <= end_datetime)
-        filtered_df = df[mask]  # copy()を削除してメモリ使用量を削減
+        # 期間でフィルタリング（メモリ効率版 - 段階的条件適用）
+        # 大きなデータセットでメモリ断片化を避けるため、条件を段階的に適用
+        datetime_col = df['出場年月日時分']
+        
+        # 1段階目: 開始日時以降のデータを抽出
+        start_mask = datetime_col >= start_datetime
+        temp_df = df[start_mask]
+        
+        # 2段階目: 終了日時以前のデータを抽出
+        end_mask = temp_df['出場年月日時分'] <= end_datetime
+        filtered_df = temp_df[end_mask]
         
         self.logger.info(f"期間 {start_date_str} ～ {end_date_str}: {len(filtered_df)}件")
         
@@ -174,9 +182,17 @@ class EmergencyDataCache:
         # キャッシュからデータを取得
         df = self.load_data()
         
-        # 日時範囲でフィルタリング（メモリ効率版）
-        mask = (df['出場年月日時分'] >= start_datetime) & (df['出場年月日時分'] < end_datetime)
-        filtered_df = df[mask]  # copy()を削除してメモリ使用量を削減
+        # 日時範囲でフィルタリング（メモリ効率版 - 段階的条件適用）
+        # 大きなデータセットでメモリ断片化を避けるため、条件を段階的に適用
+        datetime_col = df['出場年月日時分']
+        
+        # 1段階目: 開始日時以降のデータを抽出
+        start_mask = datetime_col >= start_datetime
+        temp_df = df[start_mask]
+        
+        # 2段階目: 終了日時以前のデータを抽出
+        end_mask = temp_df['出場年月日時分'] < end_datetime
+        filtered_df = temp_df[end_mask]
         
         self.logger.info(f"日時範囲 {start_datetime} ～ {end_datetime}: {len(filtered_df)}件")
         

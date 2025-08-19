@@ -67,25 +67,34 @@ class PPOTrainer:
         self.use_tensorboard = config['training']['logging']['tensorboard']
         self.use_wandb = config['training']['logging']['wandb']
         
+        # ★★★ wandb初期化の修正 ★★★
         if self.use_wandb:
             try:
                 print("WandB初期化中...")
-                wandb.init(
-                    project="ems-ppo",
-                    name=output_dir.name,
-                    config=config,
-                    settings=wandb.Settings(init_timeout=180)  # タイムアウトを180秒に延長
-                )
-                print("✓ WandB初期化完了")
+                
+                # wandb設定の準備
+                wandb_config = {
+                    "project": "ems-dispatch-optimization",
+                    "entity": None,  # 自動検出
+                    "name": f"{config['experiment']['name']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                    "tags": ["ppo", "emergency-dispatch", "tokyo"],
+                    "notes": f"PPO training with {config['ppo']['n_episodes']} episodes",
+                    "config": config,
+                    "settings": wandb.Settings(
+                        init_timeout=300,  # タイムアウトを5分に延長
+                        _disable_stats=True,  # システム統計を無効化（軽量化）
+                        _disable_meta=True,   # メタデータを無効化（軽量化）
+                    )
+                }
+                
+                # 初期化実行
+                wandb.init(**wandb_config)
+                print("✓ WandB初期化成功")
+                
             except Exception as e:
                 print(f"⚠️ WandB初期化に失敗しました: {e}")
                 print("WandBを無効にして学習を続行します...")
                 self.use_wandb = False
-        
-        print(f"PPOトレーナー初期化完了")
-        print(f"  総エピソード数: {self.n_episodes}")
-        print(f"  チェックポイント間隔: {self.checkpoint_interval}")
-        print(f"  評価間隔: {self.eval_interval}")
         
     def train(self):
         """
