@@ -34,7 +34,7 @@ severity:
 
 # PPOハイパーパラメータ（改善版）
 ppo:
-  n_episodes: 500
+  n_episodes: 50 # 500 → 50
   n_epochs: 5
   batch_size: 32
   clip_epsilon: 0.1  # 0.2 → 0.1

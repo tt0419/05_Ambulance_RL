@@ -13,6 +13,7 @@ from typing import Dict, Tuple, Optional, List, Any
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from data_cache import get_emergency_data_cache
 import sys
 import os
 
@@ -62,10 +63,23 @@ class EMSEnvironment:
         self.mode = mode
         self.current_period_idx = 0
         
+        # ログ制御フラグ
+        self._first_period_logged = False
+        self._episode_count = 0
+        
         print("=" * 60)
         print(f"EMS環境初期化 (モード: {mode})")
         print(f"設定ファイル: {config_path}")
         print("=" * 60)
+        
+        # データキャッシュの初期化
+        print("データキャッシュを初期化中...")
+        self.data_cache = get_emergency_data_cache()
+        
+        # 初回データ読み込み（起動時に一度だけ）
+        print("初期データ読み込み中...")
+        self.data_cache.load_data()
+        print("データキャッシュ準備完了")
         
         # 傷病度設定の初期化
         self._setup_severity_mapping()
@@ -224,7 +238,13 @@ class EMSEnvironment:
         self.current_period_idx = period_index
         period = periods[period_index]
         
-        print(f"\nエピソード開始: {period['start_date']} - {period['end_date']}")
+        # エピソード開始情報は最初の期間のみ表示
+        if not self._first_period_logged:
+            print(f"\nエピソード開始: {period['start_date']} - {period['end_date']}")
+            self._first_period_logged = True
+        
+        # エピソードカウンタをインクリメント
+        self._episode_count += 1
         
         # シミュレータの初期化
         self._init_simulator_for_period(period)
@@ -262,60 +282,22 @@ class EMSEnvironment:
         self.pending_call = None
         
     def _load_calls_for_period(self, period: Dict) -> pd.DataFrame:
-        """指定期間の救急事案データを読み込み"""
-        import os
-        import pandas as pd
+        """
+        指定期間の救急事案データを読み込み（最適化版）
+        キャッシュからデータを取得するため高速
+        """
+        start_date = str(period['start_date'])
+        end_date = str(period['end_date'])
         
-        # データファイルのパス（両方のユーザーに対応）
-        possible_paths = [
-            "C:/Users/tetsu/OneDrive - Yokohama City University/30_データカタログ/tfd_data/hanso_special_wards.csv",
-            "C:/Users/hp/OneDrive - Yokohama City University/30_データカタログ/tfd_data/hanso_special_wards.csv"
-        ]
+        # 最初の期間のみ詳細情報を表示
+        if not self._first_period_logged:
+            print(f"期間データ取得中: {start_date} - {end_date}")
         
-        calls_path = None
-        for path in possible_paths:
-            if os.path.exists(path):
-                calls_path = path
-                break
+        # キャッシュから高速取得
+        filtered_df = self.data_cache.get_period_data(start_date, end_date)
         
-        if calls_path is None:
-            print("エラー: データファイルが見つかりません")
-            return pd.DataFrame()
-        
-        # データ読み込み
-        print(f"データ読み込み中: {os.path.basename(calls_path)}")
-        calls_df = pd.read_csv(calls_path, encoding='utf-8')
-        
-        # 日付変換（文字列から datetime へ）
-        calls_df['出場年月日時分'] = pd.to_datetime(calls_df['出場年月日時分'], errors='coerce')
-        
-        # NaTを除外
-        calls_df = calls_df.dropna(subset=['出場年月日時分'])
-        
-        # 期間の日付をパース
-        # period['start_date'] は "20230401" 形式の文字列
-        start_str = str(period['start_date'])
-        end_str = str(period['end_date'])
-        
-        # YYYYMMDD形式をYYYY-MM-DD形式に変換
-        start_date_str = f"{start_str[:4]}-{start_str[4:6]}-{start_str[6:8]}"
-        end_date_str = f"{end_str[:4]}-{end_str[4:6]}-{end_str[6:8]}"
-        
-        start_date = pd.to_datetime(start_date_str)
-        end_date = pd.to_datetime(end_date_str) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-        
-        print(f"期間: {start_date.strftime('%Y-%m-%d')} ～ {end_date.strftime('%Y-%m-%d')}")
-        
-        # 期間でフィルタリング
-        mask = (calls_df['出場年月日時分'] >= start_date) & (calls_df['出場年月日時分'] <= end_date)
-        filtered_df = calls_df[mask].copy()
-        
-        print(f"期間内の事案数: {len(filtered_df)}件")
-        
-        # 「その他」を除外
-        before_filter = len(filtered_df)
-        filtered_df = filtered_df[filtered_df['収容所見程度'] != 'その他']
-        print(f"「その他」除外後: {len(filtered_df)}件 (除外: {before_filter - len(filtered_df)}件)")
+        if not self._first_period_logged:
+            print(f"期間内の事案数: {len(filtered_df)}件")
         
         # 必要なカラムの存在確認
         required_columns = ['救急事案番号キー', 'Y_CODE', 'X_CODE', '収容所見程度', '出場年月日時分']
@@ -324,20 +306,16 @@ class EMSEnvironment:
             print(f"警告: 必要なカラムが不足: {missing_columns}")
             return pd.DataFrame()
         
-        # 座標の有効性確認
-        before_drop = len(filtered_df)
-        filtered_df = filtered_df.dropna(subset=['Y_CODE', 'X_CODE'])
-        if before_drop > len(filtered_df):
-            print(f"無効な座標を除外: {before_drop - len(filtered_df)}件")
-        
-        print(f"最終的な事案数: {len(filtered_df)}件")
-        
-        if len(filtered_df) > 0:
-            # 傷病度の分布を表示
-            severity_counts = filtered_df['収容所見程度'].value_counts()
-            print("傷病度分布:")
-            for severity, count in severity_counts.head().items():
-                print(f"  {severity}: {count}件")
+        if not self._first_period_logged:
+            print(f"最終的な事案数: {len(filtered_df)}件")
+            
+            if len(filtered_df) > 0:
+                # 傷病度の分布を表示
+                severity_counts = filtered_df['収容所見程度'].value_counts()
+                print("傷病度分布:")
+                for severity, count in severity_counts.head().items():
+                    print(f"  {severity}: {count}件")
+            print(f"エピソード長: {self.config['data']['episode_duration_hours']}時間")
         
         return filtered_df
     
@@ -383,6 +361,7 @@ class EMSEnvironment:
         mask = (calls_df['出場年月日時分'] >= episode_start) & (calls_df['出場年月日時分'] <= episode_end)
         episode_df = calls_df[mask].copy()
         
+        # 毎回表示する情報（簡潔版）
         print(f"エピソード期間: {episode_start.strftime('%Y-%m-%d %H:%M')} ～ {episode_end.strftime('%Y-%m-%d %H:%M')}")
         print(f"エピソード内事案数: {len(episode_df)}件")
         

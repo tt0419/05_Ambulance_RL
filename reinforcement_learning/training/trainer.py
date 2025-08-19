@@ -101,9 +101,8 @@ class PPOTrainer:
                 update_stats = self.agent.update()
                 self.training_stats.append(update_stats)
             
-            # ログ出力
-            if episode % 10 == 0:
-                self._log_training_progress(episode, episode_reward, episode_length, episode_stats)
+            # ログ出力（毎回表示）
+            self._log_training_progress(episode, episode_reward, episode_length, episode_stats)
             
             # 評価
             if episode % self.eval_interval == 0:
@@ -279,6 +278,7 @@ class PPOTrainer:
         recent_rewards = self.episode_rewards[-100:] if len(self.episode_rewards) >= 100 else self.episode_rewards
         avg_reward = np.mean(recent_rewards)
         
+        # 毎エピソード表示（簡潔版）
         print(f"Episode {episode}/{self.n_episodes}")
         print(f"  報酬: {reward:.2f} (平均: {avg_reward:.2f})")
         print(f"  長さ: {length}")
@@ -287,7 +287,8 @@ class PPOTrainer:
             avg_rt = np.mean(stats['response_times'])
             print(f"  平均応答時間: {avg_rt:.2f}分")
         
-        if self.training_stats:
+        # 詳細なログは10エピソードごとに表示
+        if episode % 10 == 0 and self.training_stats:
             latest_stats = self.training_stats[-1]
             print(f"  Actor損失: {latest_stats.get('actor_loss', 0):.4f}")
             print(f"  Critic損失: {latest_stats.get('critic_loss', 0):.4f}")

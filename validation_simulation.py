@@ -18,6 +18,7 @@ import pickle
 import csv
 from collections import defaultdict
 import seaborn as sns
+from data_cache import get_emergency_data_cache, get_datetime_range_emergency_data
 
 # ServiceTimeGeneratorEnhancedのインポート
 import sys
@@ -2778,6 +2779,21 @@ def run_validation_simulation(
     np.random.seed(random_seed)
     random.seed(random_seed)
     
+    print("=" * 60)
+    print("検証シミュレーション開始（最適化版）")
+    print("=" * 60)
+    
+    # データキャッシュの初期化確認
+    data_cache = get_emergency_data_cache()
+    cache_info = data_cache.get_cache_info()
+    if cache_info["cached"]:
+        print(f"✓ データキャッシュ使用中: {cache_info['total_records']:,}件")
+        print(f"  データ期間: {cache_info['date_range']['start']} ～ {cache_info['date_range']['end']}")
+    else:
+        print("初回データ読み込み中...")
+        data_cache.load_data()
+        print("データキャッシュ準備完了")
+    
     # データの読み込み
     base_dir = "data/tokyo"
     
@@ -2890,17 +2906,10 @@ def run_validation_simulation(
     
     print(f"有効な病院H3インデックス: {len(hospital_h3_indices)}件")
     
-    # 救急事案データ
-    print("救急事案データを読み込み中...")
-    calls_df = pd.read_csv(r"C:\Users\tetsu\OneDrive - Yokohama City University\30_データカタログ\tfd_data\hanso_special_wards.csv", encoding='utf-8')
-    calls_df['出場年月日時分'] = pd.to_datetime(calls_df['出場年月日時分'])
+    # 救急事案データ（最適化版）
+    print("救急事案データ取得中...")
     
-    # 「その他」の事案を除外
-    original_call_count = len(calls_df)
-    calls_df = calls_df[calls_df['収容所見程度'] != 'その他'].copy()
-    print(f"情報: 傷病度「その他」の事案を除外しました。(除外件数: {original_call_count - len(calls_df)})")
-    
-    # 指定された開始日時と期間に基づいてデータを抽出
+    # 日時範囲を計算
     try:
         sim_start_datetime = pd.to_datetime(target_date_str)  # YYYY-MM-DD HH:MM:SS を期待。時刻がなければ00:00:00
     except ValueError:
@@ -2908,10 +2917,9 @@ def run_validation_simulation(
         return None
 
     end_datetime_sim = sim_start_datetime + pd.Timedelta(hours=simulation_duration_hours)
-
-    # emergency_df全体から期間内のデータをフィルタリング
-    mask = (calls_df['出場年月日時分'] >= sim_start_datetime) & (calls_df['出場年月日時分'] < end_datetime_sim)
-    calls_df = calls_df[mask].copy()
+    
+    # キャッシュから高速取得（前処理済み：日付変換、「その他」除外済み）
+    calls_df = get_datetime_range_emergency_data(sim_start_datetime, end_datetime_sim)
     print(f"期間内の事案数: {len(calls_df)}件")
     
     # サービス時間パラメータの読み込み
