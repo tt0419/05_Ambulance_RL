@@ -622,14 +622,14 @@ class EMSEnvironment:
         return reward
     
     def _update_statistics(self, dispatch_result: Dict):
-        """統計情報を更新"""
+        """統計情報を更新（拡張版）"""
         if not dispatch_result['success']:
             self.episode_stats['failed_dispatches'] += 1
             return
         
         self.episode_stats['total_dispatches'] += 1
         
-        # 応答時間統計
+        # 基本的な応答時間統計
         rt_minutes = dispatch_result['response_time_minutes']
         self.episode_stats['response_times'].append(rt_minutes)
         
@@ -650,6 +650,134 @@ class EMSEnvironment:
             self.episode_stats['critical_total'] += 1
             if rt_minutes <= 6.0:
                 self.episode_stats['critical_6min'] += 1
+        
+        # 拡張統計の更新
+        self._update_extended_statistics(dispatch_result)
+    
+    def _update_extended_statistics(self, dispatch_result: Dict):
+        """拡張統計情報の更新"""
+        try:
+            ambulance_id = dispatch_result['ambulance_id']
+            severity = dispatch_result['severity']
+            rt_minutes = dispatch_result['response_time_minutes']
+            
+            # 救急車稼働統計
+            if ambulance_id not in self.episode_stats['ambulance_utilization']['total_dispatches_by_ambulance']:
+                self.episode_stats['ambulance_utilization']['total_dispatches_by_ambulance'][ambulance_id] = 0
+            self.episode_stats['ambulance_utilization']['total_dispatches_by_ambulance'][ambulance_id] += 1
+            
+            # 時間別統計
+            if self.pending_call and 'datetime' in self.pending_call:
+                hour = self.pending_call['datetime'].hour
+                self.episode_stats['temporal_patterns']['hourly_call_counts'][hour] += 1
+                self.episode_stats['temporal_patterns']['hourly_response_times'][hour].append(rt_minutes)
+                self.episode_stats['ambulance_utilization']['hourly_counts'][hour] += 1
+            
+            # 空間統計
+            if self.pending_call and 'h3_index' in self.pending_call:
+                h3_area = self.pending_call['h3_index']
+                self.episode_stats['spatial_coverage']['areas_served'].add(h3_area)
+                
+                if h3_area not in self.episode_stats['spatial_coverage']['response_time_by_area']:
+                    self.episode_stats['spatial_coverage']['response_time_by_area'][h3_area] = []
+                    self.episode_stats['spatial_coverage']['call_density_by_area'][h3_area] = 0
+                
+                self.episode_stats['spatial_coverage']['response_time_by_area'][h3_area].append(rt_minutes)
+                self.episode_stats['spatial_coverage']['call_density_by_area'][h3_area] += 1
+            
+            # 傷病度別詳細統計
+            severity_category = self._get_severity_category(severity)
+            if severity_category in self.episode_stats['severity_detailed_stats']:
+                stats = self.episode_stats['severity_detailed_stats'][severity_category]
+                stats['count'] += 1
+                stats['response_times'].append(rt_minutes)
+                if rt_minutes <= 6.0:
+                    stats['under_6min'] += 1
+                if rt_minutes <= 13.0:
+                    stats['under_13min'] += 1
+            
+            # 移動距離の推定（簡易版）
+            if hasattr(self, 'ambulance_states') and ambulance_id in self.ambulance_states:
+                amb_state = self.ambulance_states[ambulance_id]
+                if self.pending_call and 'h3_index' in self.pending_call:
+                    # 距離行列から移動距離を取得（可能な場合）
+                    estimated_distance = self._estimate_travel_distance(
+                        amb_state['current_h3'], 
+                        self.pending_call['h3_index']
+                    )
+                    self.episode_stats['efficiency_metrics']['total_distance'] += estimated_distance
+                    
+        except Exception as e:
+            # 統計更新エラーは致命的ではないため、警告のみ出力
+            print(f"統計更新でエラー: {e}")
+    
+    def _get_severity_category(self, severity: str) -> str:
+        """傷病度から標準カテゴリに変換"""
+        if severity in ['重篤', '重症', '死亡']:
+            return 'critical'
+        elif severity in ['中等症']:
+            return 'moderate'
+        elif severity in ['軽症']:
+            return 'mild'
+        else:
+            return 'mild'  # デフォルト
+    
+    def _estimate_travel_distance(self, from_h3: str, to_h3: str) -> float:
+        """移動距離の推定（km）"""
+        try:
+            from_idx = self.grid_mapping.get(from_h3)
+            to_idx = self.grid_mapping.get(to_h3)
+            
+            if from_idx is not None and to_idx is not None and hasattr(self, 'travel_distance_matrix'):
+                distance = self.travel_distance_matrix[from_idx, to_idx]
+                return distance / 1000.0  # メートルからキロメートルに変換
+            else:
+                # フォールバック: 移動時間から距離を推定（平均時速30km/h）
+                travel_time_seconds = self._calculate_travel_time(from_h3, to_h3)
+                travel_time_hours = travel_time_seconds / 3600.0
+                return travel_time_hours * 30.0  # 30km/h
+        except:
+            return 5.0  # デフォルト5km
+    
+    def get_episode_statistics(self) -> Dict:
+        """エピソード終了時の詳細統計を取得"""
+        stats = self.episode_stats.copy()
+        
+        # 集計値の計算
+        if stats['response_times']:
+            total_calls = len(stats['response_times'])
+            stats['summary'] = {
+                'total_calls': total_calls,
+                'mean_response_time': np.mean(stats['response_times']),
+                'median_response_time': np.median(stats['response_times']),
+                '95th_percentile_response_time': np.percentile(stats['response_times'], 95),
+                '6min_achievement_rate': stats['achieved_6min'] / total_calls,
+                '13min_achievement_rate': stats['achieved_13min'] / total_calls,
+            }
+            
+            # 重症系達成率
+            if stats['critical_total'] > 0:
+                stats['summary']['critical_6min_rate'] = stats['critical_6min'] / stats['critical_total']
+            else:
+                stats['summary']['critical_6min_rate'] = 0.0
+        
+        # 救急車稼働率の計算
+        if stats['ambulance_utilization']['total_dispatches_by_ambulance']:
+            dispatches = list(stats['ambulance_utilization']['total_dispatches_by_ambulance'].values())
+            stats['ambulance_utilization']['mean'] = np.mean(dispatches)
+            stats['ambulance_utilization']['max'] = np.max(dispatches)
+            stats['ambulance_utilization']['std'] = np.std(dispatches)
+        
+        # エリアカバレッジ
+        stats['spatial_coverage']['areas_served'] = len(stats['spatial_coverage']['areas_served'])
+        
+        # 効率性メトリクス
+        if stats['total_dispatches'] > 0:
+            stats['efficiency_metrics']['distance_per_call'] = (
+                stats['efficiency_metrics']['total_distance'] / stats['total_dispatches']
+            )
+        
+        return stats
     
     def _advance_to_next_call(self):
         """次の事案へ進む"""
@@ -727,8 +855,9 @@ class EMSEnvironment:
         return 12  # デフォルト
     
     def _init_episode_stats(self) -> Dict:
-        """エピソード統計の初期化"""
+        """エピソード統計の初期化（拡張版）"""
         return {
+            # 基本統計
             'total_dispatches': 0,
             'failed_dispatches': 0,
             'response_times': [],
@@ -736,7 +865,41 @@ class EMSEnvironment:
             'achieved_6min': 0,
             'achieved_13min': 0,
             'critical_total': 0,
-            'critical_6min': 0
+            'critical_6min': 0,
+            
+            # 救急車稼働統計
+            'ambulance_utilization': {
+                'hourly_counts': [0] * 24,  # 時間別出動回数
+                'total_dispatches_by_ambulance': {},  # 救急車別出動回数
+                'busy_time_by_ambulance': {},  # 救急車別稼働時間
+            },
+            
+            # 空間統計
+            'spatial_coverage': {
+                'areas_served': set(),  # サービス提供エリア
+                'response_time_by_area': {},  # エリア別応答時間
+                'call_density_by_area': {},  # エリア別事案密度
+            },
+            
+            # 時間パターン
+            'temporal_patterns': {
+                'hourly_call_counts': [0] * 24,  # 時間別事案数
+                'hourly_response_times': {i: [] for i in range(24)},  # 時間別応答時間
+            },
+            
+            # 効率性メトリクス
+            'efficiency_metrics': {
+                'total_distance': 0.0,  # 総移動距離
+                'distance_per_call': 0.0,  # 事案あたり移動距離
+                'travel_time_accuracy': [],  # 移動時間予測精度
+            },
+            
+            # 傷病度別詳細統計
+            'severity_detailed_stats': {
+                'critical': {'count': 0, 'under_6min': 0, 'under_13min': 0, 'response_times': []},
+                'moderate': {'count': 0, 'under_6min': 0, 'under_13min': 0, 'response_times': []},
+                'mild': {'count': 0, 'under_6min': 0, 'under_13min': 0, 'response_times': []},
+            }
         }
     
     def get_action_mask(self) -> np.ndarray:
