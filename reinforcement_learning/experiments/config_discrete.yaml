@@ -1,0 +1,176 @@
+# config_discrete.yaml
+# 従来の離散報酬関数を使用したPPO学習の設定（比較用）
+# ================================================================
+# 実験設定
+# ================================================================
+experiment:
+  name: "ppo_discrete_reward_v1"
+  seed: 42
+  device: "cuda"  # GPUがない場合は "cpu"
+
+# ================================================================
+# データ設定（連続報酬と同じ）
+# ================================================================
+data:
+  # 2023年で学習
+  train_periods:
+    - start_date: "20230401"
+      end_date: "20230430"    # 4月（平常期）
+    - start_date: "20230801"
+      end_date: "20230831"    # 8月（夏季繁忙期）
+    - start_date: "20231201"
+      end_date: "20231231"    # 12月（冬季繁忙期）
+  
+  # 2024年同月で評価
+  eval_periods:
+    - start_date: "20240401"
+      end_date: "20240407"    # 4月評価
+    - start_date: "20240801"
+      end_date: "20240807"    # 8月評価
+    - start_date: "20241201"
+      end_date: "20241207"    # 12月評価
+  
+  episode_duration_hours: 24
+
+# ================================================================
+# 傷病度設定（同じ）
+# ================================================================
+severity:
+  categories:
+    critical:
+      conditions: ["重篤", "重症", "死亡"]
+      reward_weight: 5.0
+      time_limit_seconds: 360  # 6分目標
+      
+    moderate:
+      conditions: ["中等症"]
+      reward_weight: 2.0
+      time_limit_seconds: 780  # 13分目標
+      
+    mild:
+      conditions: ["軽症"]
+      reward_weight: 1.0
+      time_limit_seconds: 780  # 13分目標
+      
+  thresholds:
+    golden_time: 360   # 6分
+    standard_time: 780 # 13分
+
+# ================================================================
+# PPOハイパーパラメータ（同じ）
+# ================================================================
+ppo:
+  n_episodes: 3000
+  n_epochs: 10
+  batch_size: 128
+  
+  clip_epsilon: 0.2
+  gamma: 0.99
+  gae_lambda: 0.95
+  
+  learning_rate:
+    actor: 0.0003
+    critic: 0.0003
+    scheduler: "cosine"
+    
+  entropy_coef: 0.1
+  max_grad_norm: 0.5
+  value_loss_coeff: 0.5
+  target_kl: 0.02
+
+# ================================================================
+# 報酬関数設定（離散報酬）★違いはここだけ★
+# ================================================================
+reward:
+  # 離散報酬を使用（デフォルト）
+  use_continuous: false  # ← falseまたは省略で離散報酬
+  
+  # 離散報酬のパラメータ
+  weights:
+    response_time: -1.0        # 応答時間のペナルティ
+    severity_bonus: 3.0        # 傷病度達成ボーナス（増加）
+    threshold_penalty: -10.0   # 閾値超過ペナルティ
+    coverage_preservation: 0.5 # カバレッジ維持
+    
+  penalties:
+    over_6min: -10.0      # 6分超過（重症向け強化）
+    over_13min: -30.0     # 13分超過（強化）
+    per_minute_over: -2.0 # 1分あたり追加ペナルティ（強化）
+
+# ================================================================
+# ネットワーク構造（同じ）
+# ================================================================
+network:
+  state_encoder:
+    incident_features: 8
+    ambulance_features: 8
+    spatial_features: 16
+    temporal_features: 8
+    
+  actor:
+    hidden_layers: [256, 128, 64]
+    activation: "relu"
+    dropout: 0.1
+    
+  critic:
+    hidden_layers: [256, 128]
+    activation: "relu"
+    dropout: 0.1
+
+# ================================================================
+# 教師あり学習設定（同じ）
+# ================================================================
+teacher:
+  enabled: true
+  initial_prob: 0.5
+  final_prob: 0.1
+  decay_episodes: 1500
+
+# ================================================================
+# 評価設定（同じ）
+# ================================================================
+evaluation:
+  interval: 50
+  n_eval_episodes: 20
+  eval_deterministic: false
+  
+  metrics:
+    - "critical_6min_rate"
+    - "achieved_13min_rate"
+    - "mean_response_time"
+    - "critical_mean_time"
+    
+  compare_baselines:
+    - "closest"
+    - "severity_based"
+
+# ================================================================
+# 訓練設定（同じ）
+# ================================================================
+training:
+  checkpoint_interval: 100
+  keep_last_n: 10
+  
+  early_stopping:
+    enabled: true
+    patience: 500
+    min_delta: 0.01
+    min_episodes: 1000
+    
+  logging:
+    interval: 10
+    wandb: true
+    tensorboard: true
+    log_level: "INFO"
+
+# ================================================================
+# 実験管理用の設定
+# ================================================================
+metadata:
+  description: "従来の離散報酬関数による比較実験"
+  author: "研究者名"
+  date: "2025-01-20"
+  notes: |
+    - 連続報酬との比較用ベースライン
+    - 閾値ベースの段階的な報酬構造
+    - ペナルティを強化して重症優先を促進

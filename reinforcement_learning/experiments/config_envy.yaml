@@ -1,0 +1,161 @@
+# config.yaml - すべての調整可能パラメータを一元管理
+# ================================================================
+# 実験設定
+# ================================================================
+experiment:
+  name: "ppo_dispatch_optimization"
+  seed: 42
+  device: "cuda"  # "cpu" or "cuda"
+  
+# ================================================================
+# データ設定（調整頻度：高）
+# ================================================================
+data:
+  # 学習用データ期間
+  train_periods:
+    - start_date: "20230401"  # ← 変更箇所：学習開始日
+      end_date: "20230430"    # ← 変更箇所：学習終了日
+    # - start_date: "20231201"  # 繁忙期データも含める
+    #   end_date: "20231230"
+  
+  # 評価用データ期間  
+  eval_periods:
+    - start_date: "20230501"  # ← 変更箇所：評価開始日
+      end_date: "20230507"    # ← 変更箇所：評価終了日
+  
+  # シミュレーション設定
+  episode_duration_hours: 24  # ← 変更箇所：1エピソードの長さ（時間）
+  
+# ================================================================
+# 傷病度設定（調整頻度：中）
+# ================================================================
+severity:
+  # 傷病度カテゴリと重み（重症・重篤・死亡は同じ重み）
+  categories:
+    critical:
+      conditions: ["重篤", "重症", "死亡"]  # ← 同じ重み
+      reward_weight: 5.0  # ← 変更箇所：重症系の重み
+      time_limit_seconds: 360  # 6分目標
+      
+    moderate:
+      conditions: ["中等症"]
+      reward_weight: 2.0  # ← 変更箇所：中等症の重み
+      time_limit_seconds: 480  # 8分目標
+      
+    mild:
+      conditions: ["軽症"]
+      reward_weight: 1.0  # ← 変更箇所：軽症の重み
+      time_limit_seconds: 780  # 13分以内
+      
+  # 時間閾値設定
+  thresholds:
+    golden_time: 360  # 6分（重症系目標）← 変更箇所
+    standard_time: 780  # 13分（全体目標）← 変更箇所
+
+# ================================================================
+# PPOハイパーパラメータ（調整頻度：高）
+# ================================================================
+ppo:
+  # 学習設定
+  n_episodes: 1000  # ← 変更箇所：総エピソード数
+  n_epochs: 10  # ← 変更箇所：PPO更新エポック数
+  batch_size: 128  # ← 変更箇所：バッチサイズ
+  
+  # PPOアルゴリズムパラメータ
+  clip_epsilon: 0.2  # ← 変更箇所：クリッピング範囲
+  gamma: 0.97  # ← 変更箇所：割引率
+  gae_lambda: 0.95  # ← 変更箇所：GAEパラメータ
+  
+  # 学習率設定
+  learning_rate:
+    actor: 0.0003  # ← 変更箇所：Actor学習率
+    critic: 0.0003  # ← 変更箇所：Critic学習率
+    scheduler: "cosine"  # "constant", "linear", "cosine"
+    
+  # エントロピー正則化
+  entropy_coef: 0.05  # ← 変更箇所：探索促進
+
+# ================================================================
+# 報酬関数設定（調整頻度：高）
+# ================================================================
+reward:
+  # 各要素の重み
+  weights:
+    response_time: -0.7  # ← 変更箇所：応答時間ペナルティ
+    severity_bonus: 3.0  # ← 変更箇所：傷病度ボーナス係数
+    threshold_penalty: -7.0  # ← 変更箇所：閾値超過ペナルティ
+    coverage_preservation: 1.0  # ← 変更箇所：カバレッジ維持報酬
+    
+  # ペナルティ設定
+  penalties:
+    over_6min: -1.0  # ← 変更箇所：6分超過基本ペナルティ
+    over_13min: -5.0  # ← 変更箇所：13分超過基本ペナルティ
+    per_minute_over: -0.1  # ← 変更箇所：1分あたり追加ペナルティ
+
+  # 成功報酬を追加
+  bonuses:
+      under_6min: 10
+      # under_3min: 5
+      critical_under_6min: 50  # 重症の成功を特に評価
+
+# ================================================================
+# ネットワーク構造（調整頻度：低）
+# ================================================================
+network:
+  # 状態エンコーダ
+  state_encoder:
+    ambulance_features: 8  # ← 変更箇所：救急車特徴量次元
+    incident_features: 6  # ← 変更箇所：事案特徴量次元
+    spatial_features: 16  # ← 変更箇所：空間特徴量次元
+    temporal_features: 8  # ← 変更箇所：時間特徴量次元
+    
+  # Actor/Criticネットワーク
+  actor:
+    hidden_layers: [256, 128, 64]  # ← 変更箇所：隠れ層構造
+    activation: "relu"  # "relu", "tanh", "gelu"
+    dropout: 0.1  # ← 変更箇所：ドロップアウト率
+    
+  critic:
+    hidden_layers: [256, 128]  # ← 変更箇所：隠れ層構造
+    activation: "relu"
+    dropout: 0.1
+
+# ================================================================
+# 学習管理（調整頻度：中）
+# ================================================================
+training:
+  # チェックポイント
+  checkpoint_interval: 100  # ← 変更箇所：保存間隔（エピソード）
+  keep_last_n: 5  # 保持する最新モデル数
+  
+  # 早期終了
+  early_stopping:
+    enabled: true
+    patience: 500  # ← 変更箇所：改善なしエピソード数
+    min_delta: 0.001  # 最小改善幅
+    
+  # ログ設定
+  logging:
+    interval: 10  # ← 変更箇所：ログ出力間隔
+    tensorboard: true
+    wandb: true  # Weights & Biases使用時はtrue
+    
+# ================================================================
+# 評価設定（調整頻度：中）
+# ================================================================
+evaluation:
+  interval: 50  # ← 変更箇所：評価実行間隔（エピソード）
+  n_eval_episodes: 10  # ← 変更箇所：評価エピソード数
+  
+  # 評価指標
+  metrics:
+    - "mean_response_time"
+    - "response_time_by_severity"
+    - "6min_achievement_rate"
+    - "13min_achievement_rate"
+    - "critical_6min_rate"  # 重症・重篤・死亡の6分達成率
+    
+  # ベースライン比較
+  compare_baselines:
+    - "closest"  # 直近隊運用
+    - "severity_based"  # ルールベース

@@ -132,7 +132,7 @@ training:
   logging:
     interval: 10  # ← 変更箇所：ログ出力間隔
     tensorboard: true
-    wandb: false  # Weights & Biases使用時はtrue
+    wandb: true  # Weights & Biases使用時はtrue
     
 # ================================================================
 # 評価設定（調整頻度：中）
