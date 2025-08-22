@@ -140,7 +140,7 @@ class EMSEnvironment:
         
         # 状態・行動空間の次元
         self.state_dim = self._calculate_state_dim()
-        self.action_dim = 192  # 最大救急車数*(デイタイム救急抜き)
+        self.action_dim = len(self.ambulance_data)  # 実際の救急車数
         
         print(f"状態空間次元: {self.state_dim}")
         print(f"行動空間次元: {self.action_dim}")
@@ -174,11 +174,26 @@ class EMSEnvironment:
         
         # 救急署データ
         firestation_path = self.base_dir / "import/amb_place_master.csv"
-        self.ambulance_data = pd.read_csv(firestation_path, encoding='utf-8')
-        self.ambulance_data = self.ambulance_data[self.ambulance_data['special_flag'] == 1]
+        ambulance_data_full = pd.read_csv(firestation_path, encoding='utf-8')
+        ambulance_data_full = ambulance_data_full[ambulance_data_full['special_flag'] == 1]
+        
+        # 第3方面フィルタリングの設定確認
+        area_restriction = self.config.get('data', {}).get('area_restriction', {})
+        if area_restriction.get('enabled', False) and area_restriction.get('section_code') == 3:
+            # section=3の救急隊に限定
+            before_filter = len(ambulance_data_full)
+            self.ambulance_data = ambulance_data_full[ambulance_data_full['section'] == 3].copy()
+            print(f"  第3方面フィルタ適用: {before_filter}台 → {len(self.ambulance_data)}台")
+            
+            if len(self.ambulance_data) == 0:
+                print("  警告: 第3方面の救急車が見つかりません。全体を使用します。")
+                self.ambulance_data = ambulance_data_full
+        else:
+            self.ambulance_data = ambulance_data_full
+            
         print(f"  救急署数: {len(self.ambulance_data)}")
         
-        # 病院データ
+        # 病院データ（方面に関係なく全体を使用）
         hospital_path = self.base_dir / "import/hospital_master.csv"
         self.hospital_data = pd.read_csv(hospital_path, encoding='utf-8')
         print(f"  病院数: {len(self.hospital_data)}")
@@ -203,9 +218,10 @@ class EMSEnvironment:
         self.travel_distance_matrix = np.load(distance_matrix_path)
         
     def _calculate_state_dim(self):
-        """状態空間の次元を計算"""
-        # 192台の救急車 × 4特徴
-        ambulance_features = 192 * 4  # 768
+        """状態空間の次元を計算（動的）"""
+        # 実際の救急車数 × 4特徴（第3方面では15-20台程度）
+        actual_ambulance_count = len(self.ambulance_data) if hasattr(self, 'ambulance_data') else 192
+        ambulance_features = actual_ambulance_count * 4
         
         # 事案情報
         incident_features = 10
@@ -217,7 +233,8 @@ class EMSEnvironment:
         spatial_features = 20
         
         total = ambulance_features + incident_features + temporal_features + spatial_features
-        return total  # 806
+        print(f"  状態空間次元: 救急車{actual_ambulance_count}台 × 4 + その他{incident_features + temporal_features + spatial_features} = {total}")
+        return total
     
     def reset(self, period_index: Optional[int] = None) -> np.ndarray:
         """
@@ -289,12 +306,19 @@ class EMSEnvironment:
         start_date = str(period['start_date'])
         end_date = str(period['end_date'])
         
+        # 第3方面の設定確認
+        area_restriction = self.config.get('data', {}).get('area_restriction', {})
+        area_filter = None
+        if area_restriction.get('enabled', False):
+            area_filter = area_restriction.get('districts', [])
+        
         # 最初の期間のみ詳細情報を表示
         if not self._first_period_logged:
-            print(f"期間データ取得中: {start_date} - {end_date}")
+            area_info = f" (第3方面: {', '.join(area_filter)})" if area_filter else ""
+            print(f"期間データ取得中: {start_date} - {end_date}{area_info}")
         
-        # キャッシュから高速取得
-        filtered_df = self.data_cache.get_period_data(start_date, end_date)
+        # キャッシュから高速取得（エリアフィルタ付き）
+        filtered_df = self.data_cache.get_period_data(start_date, end_date, area_filter)
         
         if not self._first_period_logged:
             print(f"期間内の事案数: {len(filtered_df)}件")

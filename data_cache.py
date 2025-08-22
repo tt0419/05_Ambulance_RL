@@ -128,19 +128,29 @@ class EmergencyDataCache:
             self.logger.error(f"データ読み込みエラー: {e}")
             raise
     
-    def get_period_data(self, start_date: str, end_date: str) -> pd.DataFrame:
+    def get_period_data(self, start_date: str, end_date: str, area_filter: Optional[List[str]] = None) -> pd.DataFrame:
         """
         指定期間のデータを取得
         
         Args:
             start_date: 開始日（YYYYMMDD形式の文字列）
             end_date: 終了日（YYYYMMDD形式の文字列）
+            area_filter: 出場先区市のフィルタリングリスト（例: ["目黒区", "渋谷区", "世田谷区"]）
             
         Returns:
             指定期間のDataFrame
         """
         # キャッシュからデータを取得
         df = self.load_data()
+        
+        # エリアフィルタリング（第3方面用）
+        if area_filter is not None:
+            if '出場先区市' in df.columns:
+                before_area_filter = len(df)
+                df = df[df['出場先区市'].isin(area_filter)]
+                self.logger.info(f"エリアフィルタ適用: {before_area_filter}件 → {len(df)}件 (対象: {', '.join(area_filter)})")
+            else:
+                self.logger.warning("'出場先区市'カラムが見つかりません。エリアフィルタをスキップします。")
         
         # 日付文字列を変換
         start_str = str(start_date)
@@ -164,7 +174,8 @@ class EmergencyDataCache:
         end_mask = temp_df['出場年月日時分'] <= end_datetime
         filtered_df = temp_df[end_mask]
         
-        self.logger.info(f"期間 {start_date_str} ～ {end_date_str}: {len(filtered_df)}件")
+        area_info = f" (エリア限定: {', '.join(area_filter)})" if area_filter else ""
+        self.logger.info(f"期間 {start_date_str} ～ {end_date_str}{area_info}: {len(filtered_df)}件")
         
         return filtered_df
     
@@ -234,9 +245,9 @@ def load_emergency_data(force_reload: bool = False) -> pd.DataFrame:
     """救急事案データを読み込み（グローバルキャッシュ使用）"""
     return _global_cache.load_data(force_reload)
 
-def get_period_emergency_data(start_date: str, end_date: str) -> pd.DataFrame:
+def get_period_emergency_data(start_date: str, end_date: str, area_filter: Optional[List[str]] = None) -> pd.DataFrame:
     """指定期間の救急事案データを取得（グローバルキャッシュ使用）"""
-    return _global_cache.get_period_data(start_date, end_date)
+    return _global_cache.get_period_data(start_date, end_date, area_filter)
 
 def get_datetime_range_emergency_data(start_datetime: pd.Timestamp, end_datetime: pd.Timestamp) -> pd.DataFrame:
     """指定日時範囲の救急事案データを取得（グローバルキャッシュ使用）"""

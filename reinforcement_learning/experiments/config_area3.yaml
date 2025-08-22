@@ -1,0 +1,216 @@
+# config_area3.yaml
+# 第三方面（目黒・渋谷・世田谷）限定のPPO学習設定
+# 問題を簡略化して学習を安定化
+# ================================================================
+# 実験設定
+# ================================================================
+experiment:
+  name: "ppo_area3_focused_v1"
+  seed: 42
+  device: "cuda"  # GPUがない場合は "cpu"
+  description: "第三方面限定による段階的学習"
+
+# ================================================================
+# データ設定
+# ================================================================
+data:
+  # 学習期間（より短期間から開始）
+  train_periods:
+    - start_date: "20230401"
+      end_date: "20230407"    # まず1週間で実験
+  
+  # 評価期間
+  eval_periods:
+    - start_date: "20230408"
+      end_date: "20230409"    # 2日間で評価
+  
+  # エピソード長を短縮して学習機会を増やす
+  episode_duration_hours: 8  # 24→8時間に短縮
+  
+  # 第三方面の設定（コード内で処理）
+  area_restriction:
+    enabled: true
+    area_name: "第三方面"
+    districts: ["目黒区", "渋谷区", "世田谷区"]
+    section_code: 3
+
+# ================================================================
+# 傷病度設定（変更なし）
+# ================================================================
+severity:
+  categories:
+    critical:
+      conditions: ["重篤", "重症", "死亡"]
+      reward_weight: 10.0  # さらに重症を重視
+      time_limit_seconds: 360
+      
+    moderate:
+      conditions: ["中等症"]
+      reward_weight: 2.0
+      time_limit_seconds: 780
+      
+    mild:
+      conditions: ["軽症"]
+      reward_weight: 0.5  # 軽症の重要度を下げる
+      time_limit_seconds: 780
+      
+  thresholds:
+    golden_time: 360
+    standard_time: 780
+
+# ================================================================
+# PPOハイパーパラメータ（第3方面規模に最適化）
+# ================================================================
+ppo:
+  # エピソード数を増やして学習機会を確保
+  n_episodes: 3000  # 第3方面の規模に合わせて増加
+  n_epochs: 4       # 効率的な学習のため4エポック
+  batch_size: 64    # 第3方面の事案数に適したバッチサイズ
+  
+  # 安定した学習のための設定
+  clip_epsilon: 0.2
+  gamma: 0.99
+  gae_lambda: 0.95
+  
+  # 学習率（第3方面の特性に合わせて調整）
+  learning_rate:
+    actor: 0.0003   # やや控えめに設定
+    critic: 0.0005  # 価値関数は少し高めに
+    scheduler: "cosine"
+    
+  # 探索と安定性のバランス
+  entropy_coef: 0.08  # 限定された選択肢なので探索を増やす
+  max_grad_norm: 0.5
+  value_loss_coeff: 0.5
+  target_kl: 0.02
+
+# ================================================================
+# 報酬関数設定（連続報酬）
+# ================================================================
+reward:
+  # 連続報酬を使用
+  use_continuous: true
+  
+  # 第三方面用に調整した連続報酬パラメータ
+  continuous_params:
+    critical:
+      target: 6
+      max_bonus: 150     # 重症成功を大幅に評価
+      penalty_scale: 5.0 # 失敗を厳しく
+      
+    moderate:
+      target: 13
+      max_bonus: 30
+      penalty_scale: 1.0
+      
+    mild:
+      target: 13
+      max_bonus: 5       # 軽症は最小限
+      penalty_scale: 0.2
+  
+  # 基礎報酬（常に正の値を維持）
+  base_reward: 10.0
+  
+  # 従来設定（互換性のため）
+  weights:
+    response_time: -0.5
+    severity_bonus: 5.0
+    threshold_penalty: -5.0
+    coverage_preservation: 0.3
+    
+  penalties:
+    over_6min: -5.0
+    over_13min: -10.0
+    per_minute_over: -0.5
+
+# ================================================================
+# ネットワーク構造（第3方面規模に最適化）
+# ================================================================
+network:
+  state_encoder:
+    incident_features: 10     # 事案情報
+    ambulance_features: 4     # 救急車特徴量（ステータス、位置、稼働状況、最終出動時刻）
+    spatial_features: 20      # 空間情報
+    temporal_features: 8      # 時間情報
+    
+  actor:
+    hidden_layers: [128, 64]  # 第3方面の救急車数（15-20台）に適したサイズ
+    activation: "relu"
+    dropout: 0.05
+    
+  critic:
+    hidden_layers: [128, 64]  # 同上
+    activation: "relu"
+    dropout: 0.05
+
+# ================================================================
+# 教師あり学習設定（依存度を高める）
+# ================================================================
+teacher:
+  enabled: true
+  initial_prob: 0.8     # 80%は教師に従う
+  final_prob: 0.3       # 最終的にも30%は教師
+  decay_episodes: 1000  # ゆっくり減衰
+  
+  # 性能が悪化したら教師に戻る（新規追加の概念）
+  adaptive_recovery:
+    enabled: true
+    check_interval: 50
+    min_performance: 0.2  # 6分達成率20%未満で教師復帰
+
+# ================================================================
+# 評価設定
+# ================================================================
+evaluation:
+  interval: 25          # より頻繁に評価
+  n_eval_episodes: 10   # 評価エピソード数を減らして高速化
+  eval_deterministic: false
+  
+  metrics:
+    - "critical_6min_rate"
+    - "achieved_13min_rate"
+    - "mean_response_time"
+    - "area3_specific_rate"  # 第三方面特有の指標
+    
+  compare_baselines:
+    - "closest"
+    - "severity_based"
+
+# ================================================================
+# 訓練設定
+# ================================================================
+training:
+  checkpoint_interval: 50
+  keep_last_n: 10
+  
+  # 早期停止の設定を緩める
+  early_stopping:
+    enabled: true
+    patience: 300       # 早めに判断
+    min_delta: 0.005
+    min_episodes: 500   # 最低500エピソード
+    
+  logging:
+    interval: 10
+    wandb: true
+    tensorboard: true
+    log_level: "INFO"
+    
+    # 第三方面専用のログ
+    area3_specific_logs:
+      - "district_breakdown"  # 区別の性能
+      - "ambulance_utilization"  # 救急車利用率
+
+# ================================================================
+# 実験管理
+# ================================================================
+metadata:
+  description: |
+    第三方面（目黒・渋谷・世田谷）に限定した実験
+    - 事案数を約1/10に削減
+    - 救急隊数を約15-20隊に限定
+    - 学習の収束を優先
+  notes: |
+    - まず第三方面で成功モデルを作る
+    - 成功後、段階的に他方面へ拡張
+    - 8時間エピソードで学習機会を増やす
