@@ -72,6 +72,7 @@ class PPOAgent:
         self.buffer = RolloutBuffer(
             buffer_size=2048,
             state_dim=state_dim,
+            action_dim=action_dim,
             device=self.device
         )
         
@@ -112,25 +113,52 @@ class PPOAgent:
             # Actor出力（行動確率）
             action_probs = self.actor(state_tensor)
             
-            # マスキング
+            # マスキング（安全な処理）
             masked_probs = action_probs.clone()
-            masked_probs[~mask_tensor] = 0.0
+            
+            # マスクが無効な場所を極小値に設定（0ではなく）
+            masked_probs[~mask_tensor] = 1e-8
             
             # 正規化
-            if masked_probs.sum() > 0:
-                masked_probs = masked_probs / masked_probs.sum(dim=1, keepdim=True)
+            prob_sum = masked_probs.sum(dim=1, keepdim=True)
+            if prob_sum > 1e-8:
+                masked_probs = masked_probs / prob_sum
             else:
-                # 全て使用不可の場合は一様分布
-                masked_probs = mask_tensor.float() / mask_tensor.sum()
+                # 緊急時：利用可能な行動に一様分布を割り当て
+                available_count = mask_tensor.sum(dim=1, keepdim=True).float()
+                if available_count > 0:
+                    masked_probs = mask_tensor.float() / available_count
+                else:
+                    # 全て使用不可（異常状態）の場合
+                    print("警告: 利用可能な行動がありません。一様分布を使用します。")
+                    masked_probs = torch.ones_like(action_probs) / self.action_dim
+            
+            # 最終的なNaNチェック
+            if torch.any(torch.isnan(masked_probs)):
+                print("警告: masked_probsにNaN値が含まれています。修正します。")
+                masked_probs = torch.nan_to_num(masked_probs, nan=1.0/self.action_dim)
+                masked_probs = masked_probs / masked_probs.sum(dim=1, keepdim=True)
             
             # 行動選択
             if deterministic:
                 action = masked_probs.argmax(dim=1).item()
-                log_prob = torch.log(masked_probs[0, action])
+                log_prob = torch.log(torch.clamp(masked_probs[0, action], min=1e-8))
             else:
-                dist = Categorical(masked_probs)
-                action = dist.sample().item()
-                log_prob = dist.log_prob(torch.tensor(action, device=self.device))
+                try:
+                    dist = Categorical(masked_probs)
+                    action = dist.sample().item()
+                    log_prob = dist.log_prob(torch.tensor(action, device=self.device))
+                except ValueError as e:
+                    print(f"Categorical分布作成エラー: {e}")
+                    print(f"masked_probs: {masked_probs}")
+                    # フォールバック: 利用可能な行動からランダム選択
+                    available_actions = torch.where(mask_tensor[0])[0]
+                    if len(available_actions) > 0:
+                        action = available_actions[torch.randint(0, len(available_actions), (1,))].item()
+                        log_prob = torch.log(torch.tensor(1.0/len(available_actions)))
+                    else:
+                        action = 0
+                        log_prob = torch.log(torch.tensor(1.0/self.action_dim))
             
             # Critic出力（状態価値）
             value = self.critic(state_tensor).squeeze().item()
@@ -238,12 +266,42 @@ class PPOAgent:
                 action_probs = self.actor(states)
                 values = self.critic(states).squeeze()
                 
-                # マスキング適用
+                # マスキング適用（安全なバッチ処理）
                 masked_probs = action_probs.clone()
-                masked_probs[~masks] = 0.0
-                masked_probs = masked_probs / (masked_probs.sum(dim=1, keepdim=True) + 1e-8)
                 
-                dist = Categorical(masked_probs)
+                # マスクが無効な場所を極小値に設定
+                masked_probs[~masks] = 1e-8
+                
+                # 正規化（安全版）
+                prob_sum = masked_probs.sum(dim=1, keepdim=True)
+                # ゼロ除算を防ぐため、最小値を設定
+                prob_sum = torch.clamp(prob_sum, min=1e-8)
+                masked_probs = masked_probs / prob_sum
+                
+                # 最終的なNaNチェック
+                if torch.any(torch.isnan(masked_probs)):
+                    print("警告: updateメソッドでNaN値を検出、修正します")
+                    masked_probs = torch.nan_to_num(masked_probs, nan=1.0/self.action_dim)
+                    masked_probs = masked_probs / masked_probs.sum(dim=1, keepdim=True)
+                
+                # 全て0の行を検出して修正
+                zero_rows = (masked_probs.sum(dim=1) < 1e-6)
+                if zero_rows.any():
+                    print(f"警告: {zero_rows.sum()}行で確率が全て0になっています。修正します。")
+                    # ゼロ行には一様分布を割り当て
+                    uniform_probs = torch.ones_like(masked_probs[zero_rows]) / self.action_dim
+                    masked_probs[zero_rows] = uniform_probs
+                
+                try:
+                    dist = Categorical(masked_probs)
+                except ValueError as e:
+                    print(f"Categorical分布作成エラー: {e}")
+                    print(f"masked_probs shape: {masked_probs.shape}")
+                    print(f"masked_probs min/max: {masked_probs.min()}/{masked_probs.max()}")
+                    print(f"行の和の最小値: {masked_probs.sum(dim=1).min()}")
+                    # フォールバック: 一様分布を使用
+                    masked_probs = torch.ones_like(masked_probs) / self.action_dim
+                    dist = Categorical(masked_probs)
                 log_probs = dist.log_prob(actions)
                 entropy = dist.entropy()
                 

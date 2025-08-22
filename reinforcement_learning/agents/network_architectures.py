@@ -56,11 +56,17 @@ class ActorNetwork(nn.Module):
         self._initialize_weights()
         
     def _initialize_weights(self):
-        """重みの初期化"""
+        """重みの初期化（安全版）"""
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                nn.init.orthogonal_(module.weight, gain=np.sqrt(2))
+                # より小さな初期値で安定性を確保
+                nn.init.xavier_uniform_(module.weight, gain=0.5)
                 nn.init.constant_(module.bias, 0.0)
+                
+                # 最終層は特に小さく初期化
+                if module.out_features == self.action_dim:
+                    nn.init.xavier_uniform_(module.weight, gain=0.1)
+                    nn.init.constant_(module.bias, 0.0)
     
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         """

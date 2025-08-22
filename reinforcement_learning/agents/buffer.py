@@ -16,15 +16,18 @@ class RolloutBuffer:
     def __init__(self, 
                  buffer_size: int,
                  state_dim: int,
+                 action_dim: int,
                  device: torch.device):
         """
         Args:
             buffer_size: バッファサイズ
             state_dim: 状態空間の次元
+            action_dim: 行動空間の次元（救急車台数）
             device: 計算デバイス
         """
         self.buffer_size = buffer_size
         self.state_dim = state_dim
+        self.action_dim = action_dim
         self.device = device
         
         # バッファの初期化
@@ -35,7 +38,7 @@ class RolloutBuffer:
         self.dones = np.zeros(buffer_size, dtype=bool)
         self.log_probs = np.zeros(buffer_size, dtype=np.float32)
         self.values = np.zeros(buffer_size, dtype=np.float32)
-        self.action_masks = np.zeros((buffer_size, 192), dtype=bool)  # 192台の救急車
+        self.action_masks = np.zeros((buffer_size, action_dim), dtype=bool)  # 動的な救急車台数
         
         self.pos = 0
         self.full = False
@@ -61,9 +64,22 @@ class RolloutBuffer:
         self.values[self.pos] = value
         
         if action_mask is not None:
+            # マスクの妥当性チェック
+            if not isinstance(action_mask, np.ndarray):
+                action_mask = np.array(action_mask, dtype=bool)
+            
+            if action_mask.shape[0] != self.action_dim:
+                print(f"警告: action_maskの次元が不一致: {action_mask.shape[0]} != {self.action_dim}")
+                action_mask = np.ones(self.action_dim, dtype=bool)
+            
+            # 全てFalseの場合の警告
+            if not np.any(action_mask):
+                print("警告: action_maskが全てFalseです。全てTrueに修正します。")
+                action_mask = np.ones(self.action_dim, dtype=bool)
+                
             self.action_masks[self.pos] = action_mask
         else:
-            self.action_masks[self.pos] = np.ones(192, dtype=bool)
+            self.action_masks[self.pos] = np.ones(self.action_dim, dtype=bool)
         
         self.pos = (self.pos + 1) % self.buffer_size
         if self.pos == 0:

@@ -201,10 +201,10 @@ def main():
         print("\n環境を初期化中...")
         env = EMSEnvironment(config_path, mode="train")
         
-        # 状態次元の取得
+        # 状態・行動次元の取得
         initial_state = env.reset()
         state_dim = len(initial_state)
-        action_dim = 192  # 救急車台数
+        action_dim = env.action_dim  # 環境から実際の救急車台数を取得
         
         print(f"状態空間次元: {state_dim}")
         print(f"行動空間次元: {action_dim}")

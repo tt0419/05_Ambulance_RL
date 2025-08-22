@@ -63,7 +63,7 @@ severity:
 # ================================================================
 ppo:
   # エピソード数を増やして学習機会を確保
-  n_episodes: 3000  # 第3方面の規模に合わせて増加
+  n_episodes: 500  # 第3方面の規模に合わせて増加
   n_epochs: 4       # 効率的な学習のため4エポック
   batch_size: 64    # 第3方面の事案数に適したバッチサイズ
   
@@ -150,7 +150,7 @@ teacher:
   enabled: true
   initial_prob: 0.8     # 80%は教師に従う
   final_prob: 0.3       # 最終的にも30%は教師
-  decay_episodes: 1000  # ゆっくり減衰
+  decay_episodes: 200  # ゆっくり減衰
   
   # 性能が悪化したら教師に戻る（新規追加の概念）
   adaptive_recovery:

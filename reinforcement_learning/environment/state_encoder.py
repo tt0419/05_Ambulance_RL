@@ -13,11 +13,11 @@ class StateEncoder:
     EMS環境の状態をニューラルネットワーク用のベクトルに変換
     """
     
-    def __init__(self, config: Dict):
+    def __init__(self, config: Dict, max_ambulances: int = 192):
         self.config = config
         
-        # 特徴量の次元設定
-        self.max_ambulances = 192
+        # 特徴量の次元設定（動的に設定可能）
+        self.max_ambulances = max_ambulances
         self.ambulance_features = 4  # 位置x, 位置y, 状態, 出動回数
         self.incident_features = 10  # 位置、傷病度など
         self.temporal_features = 8  # 時間関連
@@ -71,16 +71,20 @@ class StateEncoder:
         # 全特徴量を結合
         state_vector = np.concatenate(features)
         
+        # NaN値のチェックと修正
+        if np.any(np.isnan(state_vector)):
+            print(f"警告: StateEncoderでNaN値を検出しました")
+            state_vector = np.nan_to_num(state_vector, nan=0.0, posinf=1.0, neginf=0.0)
+        
         return state_vector.astype(np.float32)
     
     def _encode_ambulances(self, ambulances: Dict, grid_mapping: Dict) -> np.ndarray:
         """救急車情報をエンコード"""
-        # 192台固定
-        max_ambulances = 192
-        features = np.zeros(max_ambulances * self.ambulance_features)
+        # 動的に設定された台数を使用
+        features = np.zeros(self.max_ambulances * self.ambulance_features)
         
         for amb_id, amb_state in ambulances.items():
-            if amb_id >= max_ambulances:
+            if amb_id >= self.max_ambulances:
                 break
             
             idx = amb_id * self.ambulance_features
@@ -91,9 +95,9 @@ class StateEncoder:
             except:
                 lat, lng = 35.6762, 139.6503  # デフォルト（東京）
             
-            # 特徴量の設定
-            features[idx] = lat / 90.0  # 緯度を正規化
-            features[idx + 1] = lng / 180.0  # 経度を正規化
+            # 特徴量の設定（安全な正規化）
+            features[idx] = (lat + 90.0) / 180.0  # 緯度を[0, 1]に正規化
+            features[idx + 1] = (lng + 180.0) / 360.0  # 経度を[0, 1]に正規化
             features[idx + 2] = 1.0 if amb_state['status'] == 'available' else 0.0
             features[idx + 3] = min(amb_state['calls_today'] / 20.0, 1.0)  # 出動回数を正規化
         

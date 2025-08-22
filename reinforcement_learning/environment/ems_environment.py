@@ -25,8 +25,57 @@ from validation_simulation import (
     EventType,
     AmbulanceStatus,
     EmergencyCall,
-    Event
+    Event,
+    ServiceTimeGenerator
 )
+
+class HierarchicalServiceTimeGenerator:
+    """階層的パラメータファイル対応のServiceTimeGenerator"""
+    
+    def __init__(self, params_file: str):
+        import json
+        with open(params_file, 'r', encoding='utf-8') as f:
+            self.params = json.load(f)
+    
+    def generate_time(self, severity: str, phase: str) -> float:
+        """指定されたフェーズの時間を生成（分単位）"""
+        
+        # severityがパラメータに存在しない場合、'その他'を試し、それもなければ'軽症'にフォールバック
+        severity_params = self.params.get(severity, self.params.get('その他', self.params.get('軽症', {})))
+        
+        # フェーズが存在しない場合のフォールバック
+        if phase not in severity_params:
+            default_times = {
+                'on_scene_time': 15.0,
+                'hospital_time': 20.0,
+                'return_time': 10.0
+            }
+            return np.random.lognormal(np.log(default_times.get(phase, 10.0)), 0.5)
+        
+        phase_params = severity_params[phase]
+        
+        # 階層構造の場合は'default'キーを使用
+        if isinstance(phase_params, dict) and 'default' in phase_params:
+            default_params = phase_params['default']
+            if default_params['distribution'] == 'lognormal':
+                return np.random.lognormal(default_params['mu'], default_params['sigma'])
+            else:
+                return default_params.get('mean_minutes', 15.0)
+        # 従来の単純構造の場合
+        elif isinstance(phase_params, dict) and 'distribution' in phase_params:
+            if phase_params['distribution'] == 'lognormal':
+                return np.random.lognormal(phase_params['mu'], phase_params['sigma'])
+            else:
+                return phase_params.get('mean_minutes', 15.0)
+        else:
+            # 構造が不明な場合
+            print(f"⚠️ 不明なパラメータ構造: {severity}.{phase} = {type(phase_params)}")
+            default_times = {
+                'on_scene_time': 15.0,
+                'hospital_time': 20.0,
+                'return_time': 10.0
+            }
+            return np.random.lognormal(np.log(default_times.get(phase, 10.0)), 0.5)
 
 # 設定ユーティリティのインポート
 try:
@@ -139,8 +188,8 @@ class EMSEnvironment:
         self.verbose_logging = False
         
         # 状態・行動空間の次元
-        self.state_dim = self._calculate_state_dim()
         self.action_dim = len(self.ambulance_data)  # 実際の救急車数
+        self.state_dim = self._calculate_state_dim()  # 救急車数に基づいて計算
         
         print(f"状態空間次元: {self.state_dim}")
         print(f"行動空間次元: {self.action_dim}")
@@ -150,7 +199,10 @@ class EMSEnvironment:
         
         # RewardDesignerを一度だけ初期化
         from .reward_designer import RewardDesigner
-        self.reward_designer = RewardDesigner(self.config)        
+        self.reward_designer = RewardDesigner(self.config)
+        
+        # ServiceTimeGeneratorの初期化
+        self._init_service_time_generator()        
         
     def _setup_severity_mapping(self):
         """傷病度マッピングの設定"""
@@ -168,6 +220,41 @@ class EMSEnvironment:
             weight = info['reward_weight']
             print(f"  {category}: {conditions} (重み: {weight})")
     
+    def _init_service_time_generator(self):
+        """ServiceTimeGeneratorの初期化"""
+        # サービス時間パラメータファイルの検索
+        possible_params_paths = [
+            self.base_dir / "service_time_analysis/lognormal_parameters_hierarchical.json",
+            self.base_dir / "service_time_analysis/lognormal_parameters.json",
+            "data/tokyo/service_time_analysis/lognormal_parameters_hierarchical.json",
+            "data/tokyo/service_time_analysis/lognormal_parameters.json"
+        ]
+        
+        params_file = None
+        for path in possible_params_paths:
+            if Path(path).exists():
+                params_file = str(path)
+                print(f"  サービス時間パラメータ読み込み: {params_file}")
+                break
+        
+        if params_file:
+            try:
+                # 階層的パラメータファイルの場合は専用クラスを使用
+                if 'hierarchical' in params_file:
+                    self.service_time_generator = HierarchicalServiceTimeGenerator(params_file)
+                    print("  ✓ HierarchicalServiceTimeGenerator初期化成功")
+                else:
+                    self.service_time_generator = ServiceTimeGenerator(params_file)
+                    print("  ✓ ServiceTimeGenerator初期化成功")
+            except Exception as e:
+                print(f"  ❌ ServiceTimeGenerator初期化失敗: {e}")
+                print(f"  フォールバック処理を使用します")
+                self.service_time_generator = None
+        else:
+            print("  ❌ サービス時間パラメータファイルが見つかりません")
+            print("  フォールバック処理を使用します")
+            self.service_time_generator = None
+    
     def _load_base_data(self):
         """基本データの読み込み"""
         print("\n基本データ読み込み中...")
@@ -182,7 +269,20 @@ class EMSEnvironment:
         if area_restriction.get('enabled', False) and area_restriction.get('section_code') == 3:
             # section=3の救急隊に限定
             before_filter = len(ambulance_data_full)
-            self.ambulance_data = ambulance_data_full[ambulance_data_full['section'] == 3].copy()
+            section_filtered = ambulance_data_full[ambulance_data_full['section'] == 3].copy()
+            
+            # 不要な救急隊を除外（救急隊なし、デイタイム）
+            if 'team_name' in section_filtered.columns:
+                before_team_filter = len(section_filtered)
+                # '救急隊なし'と'デイタイム'を含む隊を除外
+                team_mask = (
+                    (section_filtered['team_name'] != '救急隊なし') &
+                    (~section_filtered['team_name'].str.contains('デイタイム', na=False))
+                )
+                section_filtered = section_filtered[team_mask].copy()
+                print(f"  チーム名フィルタ適用: {before_team_filter}台 → {len(section_filtered)}台 (救急隊なし・デイタイム除外)")
+            
+            self.ambulance_data = section_filtered
             print(f"  第3方面フィルタ適用: {before_filter}台 → {len(self.ambulance_data)}台")
             
             if len(self.ambulance_data) == 0:
@@ -220,7 +320,7 @@ class EMSEnvironment:
     def _calculate_state_dim(self):
         """状態空間の次元を計算（動的）"""
         # 実際の救急車数 × 4特徴（第3方面では15-20台程度）
-        actual_ambulance_count = len(self.ambulance_data) if hasattr(self, 'ambulance_data') else 192
+        actual_ambulance_count = self.action_dim if hasattr(self, 'action_dim') else len(self.ambulance_data)
         ambulance_features = actual_ambulance_count * 4
         
         # 事案情報
@@ -269,10 +369,15 @@ class EMSEnvironment:
         # エピソード統計のリセット
         self.episode_stats = self._init_episode_stats()
         
+        # 対応不能事案管理の初期化
+        self.unhandled_calls = []  # 対応不能になった事案のリスト
+        self.call_start_times = {}  # 事案の発生時刻記録
+        
         # 最初の事案を設定（重要！）
         if len(self.current_episode_calls) > 0:
             self.episode_step = 0
             self.pending_call = self.current_episode_calls[0]
+            self.call_start_times[self.pending_call['id']] = self.episode_step
         else:
             print("警告: エピソードに事案がありません")
             self.pending_call = None
@@ -423,20 +528,43 @@ class EMSEnvironment:
         """救急車の状態を初期化"""
         self.ambulance_states = {}
         
-        for idx, row in self.ambulance_data.iterrows():
-            if idx >= self.action_dim:
+        print(f"  救急車データから初期化開始: {len(self.ambulance_data)}台のデータ")
+        
+        # DataFrameのindexではなく、0から始まる連続した番号を使用
+        for amb_id, (_, row) in enumerate(self.ambulance_data.iterrows()):
+            if amb_id >= self.action_dim:
                 break
             
-            h3_index = h3.latlng_to_cell(row['latitude'], row['longitude'], 9)
-            
-            self.ambulance_states[idx] = {
-                'id': f"amb_{idx}",
-                'station_h3': h3_index,
-                'current_h3': h3_index,
-                'status': 'available',
-                'calls_today': 0,
-                'last_dispatch_time': None
-            }
+            try:
+                # 座標の検証
+                lat = float(row['latitude'])
+                lng = float(row['longitude'])
+                
+                if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+                    print(f"    ⚠️ 救急車{amb_id}: 無効な座標 lat={lat}, lng={lng}")
+                    continue
+                
+                h3_index = h3.latlng_to_cell(lat, lng, 9)
+                
+                self.ambulance_states[amb_id] = {
+                    'id': f"amb_{amb_id}",
+                    'station_h3': h3_index,
+                    'current_h3': h3_index,
+                    'status': 'available',
+                    'calls_today': 0,
+                    'last_dispatch_time': None
+                }
+                
+            except Exception as e:
+                print(f"    ❌ 救急車{amb_id}の初期化でエラー: {e}")
+                print(f"       データ: lat={row.get('latitude')}, lng={row.get('longitude')}")
+                continue
+        
+        print(f"  救急車状態初期化完了: {len(self.ambulance_states)}台 (利用可能: {len(self.ambulance_states)}台)")
+        
+        # 初期化直後のマスクチェック
+        initial_mask = self.get_action_mask()
+        print(f"  初期化直後の利用可能数: {initial_mask.sum()}台")
     
     def step(self, action: int) -> StepResult:
         """
@@ -571,6 +699,13 @@ class EMSEnvironment:
         amb_state['status'] = 'dispatched'
         amb_state['calls_today'] += 1
         amb_state['last_dispatch_time'] = self.episode_step
+        amb_state['current_severity'] = self.pending_call['severity']  # 傷病度を記録
+        
+        # ValidationSimulatorと同じ活動時間計算
+        completion_time = self._calculate_ambulance_completion_time(
+            action, self.pending_call, travel_time
+        )
+        amb_state['call_completion_time'] = completion_time
         
         result = {
             'success': True,
@@ -578,15 +713,125 @@ class EMSEnvironment:
             'call_id': self.pending_call['id'],
             'severity': self.pending_call['severity'],
             'response_time': travel_time,
-            'response_time_minutes': travel_time / 60.0
+            'response_time_minutes': travel_time / 60.0,
+            'estimated_completion_time': completion_time
         }
         
-        # 簡易的に一定時間後に利用可能に戻す
-        # 実際の実装では、現場活動時間、搬送時間等を考慮
-        return_time = self.episode_step + np.random.randint(30, 90)  # 30-90分後
-        self._schedule_ambulance_return(action, return_time)
-        
         return result
+    
+    def _calculate_ambulance_completion_time(self, ambulance_id: int, call: Dict, response_time: float) -> float:
+        """救急車の活動完了時間を計算（ValidationSimulator互換）"""
+        current_time = self.episode_step  # 現在時刻（分単位）
+        severity = call['severity']
+        
+        # 1. 現場到着時刻 = 現在時刻 + 応答時間
+        arrive_scene_time = current_time + (response_time / 60.0)
+        
+        # 2. 現場活動時間（ServiceTimeGeneratorを使用）
+        if self.service_time_generator:
+            try:
+                on_scene_time = self.service_time_generator.generate_time(severity, 'on_scene_time')
+            except Exception as e:
+                print(f"🚨 FALLBACK使用: 現場活動時間生成エラー({severity}, on_scene_time): {e}")
+                print(f"   正確なサービス時間ではなく推定値を使用しています！")
+                # フォールバック: ランダムな現場活動時間
+                if severity in ['重篤', '重症']:
+                    on_scene_time = np.random.lognormal(np.log(20.0), 0.5)
+                elif severity == '中等症':
+                    on_scene_time = np.random.lognormal(np.log(15.0), 0.5)
+                else:  # 軽症
+                    on_scene_time = np.random.lognormal(np.log(10.0), 0.5)
+        else:
+            # フォールバック: 傷病度別の標準時間
+            if severity in ['重篤', '重症']:
+                on_scene_time = np.random.lognormal(np.log(20.0), 0.5)
+            elif severity == '中等症':
+                on_scene_time = np.random.lognormal(np.log(15.0), 0.5)
+            else:  # 軽症
+                on_scene_time = np.random.lognormal(np.log(10.0), 0.5)
+        
+        # 3. 現場出発時刻
+        depart_scene_time = arrive_scene_time + on_scene_time
+        
+        # 4. 病院選択と搬送時間
+        hospital_h3 = self._select_hospital(call['h3_index'], severity)
+        transport_time = self._calculate_travel_time(call['h3_index'], hospital_h3) / 60.0
+        
+        # 5. 病院到着時刻
+        arrive_hospital_time = depart_scene_time + transport_time
+        
+        # 6. 病院滞在時間（ServiceTimeGeneratorを使用）
+        if self.service_time_generator:
+            try:
+                hospital_time = self.service_time_generator.generate_time(severity, 'hospital_time')
+            except Exception as e:
+                print(f"🚨 FALLBACK使用: 病院滞在時間生成エラー({severity}, hospital_time): {e}")
+                print(f"   正確なサービス時間ではなく推定値を使用しています！")
+                # フォールバック: ランダムな病院滞在時間
+                if severity in ['重篤', '重症']:
+                    hospital_time = np.random.lognormal(np.log(30.0), 0.5)
+                elif severity == '中等症':
+                    hospital_time = np.random.lognormal(np.log(20.0), 0.5)
+                else:  # 軽症
+                    hospital_time = np.random.lognormal(np.log(15.0), 0.5)
+        else:
+            # フォールバック: 傷病度別の標準時間
+            if severity in ['重篤', '重症']:
+                hospital_time = np.random.lognormal(np.log(30.0), 0.5)
+            elif severity == '中等症':
+                hospital_time = np.random.lognormal(np.log(20.0), 0.5)
+            else:  # 軽症
+                hospital_time = np.random.lognormal(np.log(15.0), 0.5)
+        
+        # 7. 病院出発時刻
+        depart_hospital_time = arrive_hospital_time + hospital_time
+        
+        # 8. 帰署時間
+        amb_state = self.ambulance_states[ambulance_id]
+        return_time = self._calculate_travel_time(hospital_h3, amb_state['station_h3']) / 60.0
+        
+        # 9. 最終完了時刻
+        completion_time = depart_hospital_time + return_time
+        
+        if self.verbose_logging:
+            print(f"救急車{ambulance_id}活動時間計算:")
+            print(f"  応答: {response_time/60:.1f}分, 現場: {on_scene_time:.1f}分")
+            print(f"  搬送: {transport_time:.1f}分, 病院: {hospital_time:.1f}分, 帰署: {return_time:.1f}分")
+            print(f"  総活動時間: {completion_time - current_time:.1f}分")
+        
+        return completion_time
+    
+    def _select_hospital(self, scene_h3: str, severity: str) -> str:
+        """病院選択（ValidationSimulatorの簡易版）"""
+        # 現在は最も近い病院を選択（実際のロジックはより複雑）
+        if not hasattr(self, '_hospital_h3_list'):
+            self._hospital_h3_list = []
+            for _, hospital in self.hospital_data.iterrows():
+                try:
+                    if pd.notna(hospital['latitude']) and pd.notna(hospital['longitude']):
+                        h3_idx = h3.latlng_to_cell(hospital['latitude'], hospital['longitude'], 9)
+                        if h3_idx in self.grid_mapping:
+                            self._hospital_h3_list.append(h3_idx)
+                except:
+                    continue
+        
+        if not self._hospital_h3_list:
+            return scene_h3  # フォールバック
+        
+        # 最短距離の病院を選択
+        min_distance = float('inf')
+        best_hospital_h3 = self._hospital_h3_list[0]
+        
+        for hospital_h3 in self._hospital_h3_list:
+            try:
+                distance = self._calculate_travel_time(scene_h3, hospital_h3)
+                if distance < min_distance:
+                    min_distance = distance
+                    best_hospital_h3 = hospital_h3
+            except:
+                continue
+        
+        return best_hospital_h3
     
     # _calculate_travel_timeメソッドの修正
     def _calculate_travel_time(self, from_h3: str, to_h3: str) -> float:
@@ -622,11 +867,7 @@ class EMSEnvironment:
         except:
             return 600.0  # エラー時のデフォルト
     
-    def _schedule_ambulance_return(self, amb_id: int, return_time: int):
-        """救急車の帰還をスケジュール"""
-        # 簡易実装: return_timeステップ後に利用可能に戻す
-        # 実際の実装では、イベントキューを使用
-        pass
+
     
     def _calculate_reward(self, dispatch_result: Dict) -> float:
         """報酬を計算"""
@@ -804,11 +1045,23 @@ class EMSEnvironment:
         return stats
     
     def _advance_to_next_call(self):
-        """次の事案へ進む"""
+        """次の事案へ進む（対応不能事案処理付き）"""
+        # 現在の事案が対応不能になっていないかチェック
+        if self.pending_call is not None:
+            call_id = self.pending_call['id']
+            if call_id in self.call_start_times:
+                wait_time = self.episode_step - self.call_start_times[call_id]
+                max_wait_time = self._get_max_wait_time(self.pending_call['severity'])
+                
+                if wait_time >= max_wait_time:
+                    # 対応不能事案として記録
+                    self._handle_unresponsive_call(self.pending_call, wait_time)
+        
         self.episode_step += 1
         
         if self.episode_step < len(self.current_episode_calls):
             self.pending_call = self.current_episode_calls[self.episode_step]
+            self.call_start_times[self.pending_call['id']] = self.episode_step
             
             # 時間経過に伴う救急車状態の更新
             self._update_ambulance_availability()
@@ -816,15 +1069,157 @@ class EMSEnvironment:
             self.pending_call = None
     
     def _update_ambulance_availability(self):
-        """救急車の利用可能性を更新"""
-        # 簡易実装: 一定時間経過後に自動的に利用可能に
+        """救急車の利用可能性を更新（validation_simulation互換版）"""
+        # 救急車の復帰処理（ValidationSimulatorと同じロジック）
         for amb_id, amb_state in self.ambulance_states.items():
             if amb_state['status'] == 'dispatched':
-                if amb_state['last_dispatch_time'] is not None:
-                    elapsed = self.episode_step - amb_state['last_dispatch_time']
-                    if elapsed > 60:  # 60分経過で自動復帰
+                if 'call_completion_time' in amb_state and amb_state['call_completion_time'] is not None:
+                    # 完了時刻に達した場合の復帰処理
+                    if self.episode_step >= amb_state['call_completion_time']:
                         amb_state['status'] = 'available'
                         amb_state['current_h3'] = amb_state['station_h3']
+                        amb_state['current_severity'] = None
+                        amb_state['call_completion_time'] = None
+                        if self.verbose_logging:
+                            print(f"救急車{amb_id}が帰署完了 (ステップ{self.episode_step})")
+                elif amb_state['last_dispatch_time'] is not None:
+                    # フォールバック: 従来の方法（エラー防止）
+                    elapsed = self.episode_step - amb_state['last_dispatch_time']
+                    if elapsed >= 120:  # 最大2時間で強制復帰
+                        amb_state['status'] = 'available'
+                        amb_state['current_h3'] = amb_state['station_h3']
+                        amb_state['current_severity'] = None
+                        print(f"警告: 救急車{amb_id}を強制復帰 (2時間経過)")
+    
+    def _get_max_wait_time(self, severity: str) -> int:
+        """傷病度に応じた最大待機時間（分）- 現実的な救急システム"""
+        if severity in ['重篤', '重症']:
+            return 10  # 重症は10分で他地域から緊急応援
+        elif severity == '中等症':
+            return 20  # 中等症は20分で他地域応援
+        else:  # 軽症
+            return 45  # 軽症は45分で他地域応援（または搬送見送り）
+    
+    def _handle_unresponsive_call(self, call: Dict, wait_time: int):
+        """対応不能事案の処理 - 現実的な救急システム"""
+        severity = call['severity']
+        
+        # 重症度別の対応決定
+        if severity in ['重篤', '重症']:
+            response_type = 'emergency_support'  # 緊急応援（高速応答）
+            support_time = 15 + wait_time  # 応援隊の到着時間（分）
+            print(f"🚨 重症緊急応援: {severity} ({wait_time}分待機) → 他地域緊急隊が{support_time}分で対応")
+        elif severity == '中等症':
+            response_type = 'standard_support'  # 標準応援
+            support_time = 25 + wait_time
+            print(f"⚡ 中等症応援: {severity} ({wait_time}分待機) → 他地域隊が{support_time}分で対応")
+        else:  # 軽症
+            # 軽症は状況に応じて対応を分岐
+            if wait_time > 60:
+                response_type = 'transport_cancel'  # 搬送見送り
+                support_time = None
+                print(f"📋 軽症搬送見送り: {severity} ({wait_time}分待機) → 患者自力搬送または待機")
+            else:
+                response_type = 'delayed_support'  # 遅延応援
+                support_time = 40 + wait_time
+                print(f"🕐 軽症遅延応援: {severity} ({wait_time}分待機) → 他地域隊が{support_time}分で対応")
+        
+        # 対応不能事案として記録
+        unhandled_call = {
+            'call_id': call['id'],
+            'severity': call['severity'],
+            'wait_time': wait_time,
+            'location': call.get('location', None),
+            'handled_by': response_type,
+            'support_time': support_time,
+            'total_time': support_time if support_time else wait_time
+        }
+        self.unhandled_calls.append(unhandled_call)
+        
+        # 重症度別統計の更新
+        self._update_unhandled_statistics(unhandled_call)
+        
+        # 重症度別ペナルティ（研究の核心部分）
+        penalty = self._calculate_realistic_penalty(call['severity'], wait_time, response_type)
+        if not hasattr(self, 'unhandled_penalty_total'):
+            self.unhandled_penalty_total = 0
+        self.unhandled_penalty_total += penalty
+    
+    def _update_unhandled_statistics(self, unhandled_call: Dict):
+        """対応不能事案の詳細統計更新"""
+        severity = unhandled_call['severity']
+        response_type = unhandled_call['handled_by']
+        
+        # 重症度別統計
+        if severity in ['重篤', '重症']:
+            self.episode_stats['critical_unhandled'] = getattr(self.episode_stats, 'critical_unhandled', 0) + 1
+            if response_type == 'emergency_support':
+                self.episode_stats['critical_emergency_support'] = getattr(self.episode_stats, 'critical_emergency_support', 0) + 1
+        elif severity == '中等症':
+            self.episode_stats['moderate_unhandled'] = getattr(self.episode_stats, 'moderate_unhandled', 0) + 1
+            if response_type == 'standard_support':
+                self.episode_stats['moderate_standard_support'] = getattr(self.episode_stats, 'moderate_standard_support', 0) + 1
+        else:  # 軽症
+            self.episode_stats['mild_unhandled'] = getattr(self.episode_stats, 'mild_unhandled', 0) + 1
+            if response_type == 'transport_cancel':
+                self.episode_stats['mild_transport_cancel'] = getattr(self.episode_stats, 'mild_transport_cancel', 0) + 1
+            elif response_type == 'delayed_support':
+                self.episode_stats['mild_delayed_support'] = getattr(self.episode_stats, 'mild_delayed_support', 0) + 1
+        
+        # 全体統計
+        self.episode_stats['unhandled_calls'] = getattr(self.episode_stats, 'unhandled_calls', 0) + 1
+        self.episode_stats['total_support_time'] = getattr(self.episode_stats, 'total_support_time', 0) + unhandled_call.get('total_time', 0)
+    
+    def _calculate_realistic_penalty(self, severity: str, wait_time: int, response_type: str) -> float:
+        """現実的なペナルティ計算（研究の核心）"""
+        
+        # 基本ペナルティ（重症度に応じて）
+        if severity in ['重篤', '重症']:
+            base_penalty = -150.0  # 重症対応不能は深刻
+        elif severity == '中等症':
+            base_penalty = -75.0   # 中等症対応不能も問題
+        else:  # 軽症
+            base_penalty = -25.0   # 軽症対応不能は相対的に軽微
+        
+        # 対応タイプ別の調整
+        if response_type == 'transport_cancel':
+            # 搬送見送りは最も軽いペナルティ
+            type_multiplier = 0.3
+        elif response_type == 'emergency_support':
+            # 緊急応援は迅速対応なので中程度のペナルティ
+            type_multiplier = 0.6
+        elif response_type == 'standard_support':
+            # 標準応援は通常のペナルティ
+            type_multiplier = 0.8
+        elif response_type == 'delayed_support':
+            # 遅延応援は重いペナルティ
+            type_multiplier = 1.2
+        else:
+            type_multiplier = 1.0
+        
+        # 待機時間による追加ペナルティ
+        time_penalty = -min(wait_time * 2, 120)  # 最大120分ペナルティ
+        
+        total_penalty = (base_penalty * type_multiplier) + time_penalty
+        
+        return total_penalty
+    
+    def _calculate_unhandled_penalty(self, severity: str, wait_time: int) -> float:
+        """対応不能事案のペナルティ計算"""
+        base_penalty = -50.0  # 基本ペナルティ
+        
+        # 傷病度による重み付け
+        if severity in ['重篤', '重症']:
+            severity_multiplier = 3.0
+        elif severity == '中等症':
+            severity_multiplier = 2.0
+        else:  # 軽症
+            severity_multiplier = 1.0
+        
+        # 待機時間による追加ペナルティ
+        time_penalty = -min(wait_time, 120) * 0.5  # 最大120分まで
+        
+        return base_penalty * severity_multiplier + time_penalty
     
     def _is_episode_done(self) -> bool:
         """エピソード終了判定"""
@@ -859,7 +1254,7 @@ class EMSEnvironment:
                 }
             }
         
-        encoder = StateEncoder(self.config)
+        encoder = StateEncoder(self.config, max_ambulances=self.action_dim)
         
         state_dict = {
             'ambulances': self.ambulance_states,
@@ -890,6 +1285,20 @@ class EMSEnvironment:
             'achieved_13min': 0,
             'critical_total': 0,
             'critical_6min': 0,
+            
+            # 対応不能事案統計（詳細版）
+            'unhandled_calls': 0,
+            'critical_unhandled': 0,
+            'moderate_unhandled': 0,
+            'mild_unhandled': 0,
+            'unhandled_penalty_total': 0.0,
+            
+            # 他地域応援統計
+            'critical_emergency_support': 0,    # 重症緊急応援
+            'moderate_standard_support': 0,     # 中等症標準応援
+            'mild_delayed_support': 0,          # 軽症遅延応援
+            'mild_transport_cancel': 0,         # 軽症搬送見送り
+            'total_support_time': 0,            # 総応援対応時間
             
             # 救急車稼働統計
             'ambulance_utilization': {
