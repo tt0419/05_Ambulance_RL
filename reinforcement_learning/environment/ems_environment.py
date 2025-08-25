@@ -264,30 +264,34 @@ class EMSEnvironment:
         ambulance_data_full = pd.read_csv(firestation_path, encoding='utf-8')
         ambulance_data_full = ambulance_data_full[ambulance_data_full['special_flag'] == 1]
         
-        # 第3方面フィルタリングの設定確認
+        # エリア制限フィルタリングの設定確認
         area_restriction = self.config.get('data', {}).get('area_restriction', {})
-        if area_restriction.get('enabled', False) and area_restriction.get('section_code') == 3:
-            # section=3の救急隊に限定
-            before_filter = len(ambulance_data_full)
-            section_filtered = ambulance_data_full[ambulance_data_full['section'] == 3].copy()
+        if area_restriction.get('enabled', False):
+            section_code = area_restriction.get('section_code')
+            area_name = area_restriction.get('area_name', f'第{section_code}方面')
             
-            # 不要な救急隊を除外（救急隊なし、デイタイム）
-            if 'team_name' in section_filtered.columns:
-                before_team_filter = len(section_filtered)
-                # '救急隊なし'と'デイタイム'を含む隊を除外
-                team_mask = (
-                    (section_filtered['team_name'] != '救急隊なし') &
-                    (~section_filtered['team_name'].str.contains('デイタイム', na=False))
-                )
-                section_filtered = section_filtered[team_mask].copy()
-                print(f"  チーム名フィルタ適用: {before_team_filter}台 → {len(section_filtered)}台 (救急隊なし・デイタイム除外)")
-            
-            self.ambulance_data = section_filtered
-            print(f"  第3方面フィルタ適用: {before_filter}台 → {len(self.ambulance_data)}台")
-            
-            if len(self.ambulance_data) == 0:
-                print("  警告: 第3方面の救急車が見つかりません。全体を使用します。")
-                self.ambulance_data = ambulance_data_full
+            if section_code in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
+                # 指定方面の救急隊に限定
+                before_filter = len(ambulance_data_full)
+                section_filtered = ambulance_data_full[ambulance_data_full['section'] == section_code].copy()
+                
+                # 不要な救急隊を除外（救急隊なし、デイタイム）
+                if 'team_name' in section_filtered.columns:
+                    before_team_filter = len(section_filtered)
+                    # '救急隊なし'と'デイタイム'を含む隊を除外
+                    team_mask = (
+                        (section_filtered['team_name'] != '救急隊なし') &
+                        (~section_filtered['team_name'].str.contains('デイタイム', na=False))
+                    )
+                    section_filtered = section_filtered[team_mask].copy()
+                    print(f"  チーム名フィルタ適用: {before_team_filter}台 → {len(section_filtered)}台 (救急隊なし・デイタイム除外)")
+                
+                self.ambulance_data = section_filtered
+                print(f"  {area_name}フィルタ適用: {before_filter}台 → {len(self.ambulance_data)}台")
+                
+                if len(self.ambulance_data) == 0:
+                    print(f"  警告: {area_name}の救急車が見つかりません。全体を使用します。")
+                    self.ambulance_data = ambulance_data_full
         else:
             self.ambulance_data = ambulance_data_full
             
@@ -319,7 +323,7 @@ class EMSEnvironment:
         
     def _calculate_state_dim(self):
         """状態空間の次元を計算（動的）"""
-        # 実際の救急車数 × 4特徴（第3方面では15-20台程度）
+        # 実際の救急車数 × 4特徴（方面によって救急車数は異なる）
         actual_ambulance_count = self.action_dim if hasattr(self, 'action_dim') else len(self.ambulance_data)
         ambulance_features = actual_ambulance_count * 4
         
@@ -411,7 +415,7 @@ class EMSEnvironment:
         start_date = str(period['start_date'])
         end_date = str(period['end_date'])
         
-        # 第3方面の設定確認
+        # エリア制限の設定確認
         area_restriction = self.config.get('data', {}).get('area_restriction', {})
         area_filter = None
         if area_restriction.get('enabled', False):
@@ -419,7 +423,8 @@ class EMSEnvironment:
         
         # 最初の期間のみ詳細情報を表示
         if not self._first_period_logged:
-            area_info = f" (第3方面: {', '.join(area_filter)})" if area_filter else ""
+            area_name = area_restriction.get('area_name', 'エリア制限')
+            area_info = f" ({area_name}: {', '.join(area_filter)})" if area_filter else ""
             print(f"期間データ取得中: {start_date} - {end_date}{area_info}")
         
         # キャッシュから高速取得（エリアフィルタ付き）

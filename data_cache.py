@@ -143,7 +143,7 @@ class EmergencyDataCache:
         # キャッシュからデータを取得
         df = self.load_data()
         
-        # エリアフィルタリング（第3方面用）
+        # エリアフィルタリング（指定方面用）
         if area_filter is not None:
             if '出場先区市' in df.columns:
                 before_area_filter = len(df)

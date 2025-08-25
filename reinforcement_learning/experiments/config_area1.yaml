@@ -1,21 +1,21 @@
-# PPO第3方面限定実験 - 閾値段階強化版
+# PPO第1方面限定実験 - 閾値段階強化版
 # 緩い基準から徐々に厳しくしていくアプローチ
 
 experiment:
-  name: ppo_area3_threshold_v1
-  description: "閾値を段階的に厳しくする学習"
-  seed: 4444
+  name: ppo_area1_threshold_v1
+  description: "第1方面での閾値を段階的に厳しくする学習"
+  seed: 1111
   device: cpu
 
 data:
   area_restriction:
     enabled: true
-    area_name: 第三方面
-    section_code: 3
+    area_name: 第一方面
+    section_code: 1
     districts:
-      - 目黒区
-      - 渋谷区
-      - 世田谷区
+      - 千代田区
+      - 中央区
+      - 港区
   
   episode_duration_hours: 4
   
@@ -28,7 +28,7 @@ data:
       end_date: "20230409"
 
 ppo:
-  n_episodes: 1200
+  n_episodes: 2000
   batch_size: 96
   
   # 安定した学習率
@@ -75,7 +75,7 @@ threshold_curriculum:
         penalty_scale: 0.8
       
     # Stage 4: 目標基準（900-1200エピソード）
-    - episodes: [900, 1200]
+    - episodes: [900, 2000]
       thresholds:
         critical_target: 6     # 6分（目標）
         moderate_target: 8     # 8分
@@ -177,17 +177,17 @@ evaluation:
   # 段階別の期待性能
   stage_targets:
     stage_1:
-      critical_10min_rate: 0.80  # 10分で80%
-      all_20min_rate: 0.95
+      critical_10min_rate: 0.85  # 10分で85%（第1方面は都心部でアクセス良好）
+      all_20min_rate: 0.98
     stage_2:
-      critical_8min_rate: 0.70   # 8分で70%
-      all_18min_rate: 0.90
+      critical_8min_rate: 0.75   # 8分で75%
+      all_18min_rate: 0.95
     stage_3:
-      critical_7min_rate: 0.60   # 7分で60%
-      all_15min_rate: 0.85
+      critical_7min_rate: 0.65   # 7分で65%
+      all_15min_rate: 0.90
     stage_4:
-      critical_6min_rate: 0.40   # 6分で40%（最終目標）
-      all_13min_rate: 0.85
+      critical_6min_rate: 0.50   # 6分で50%（第1方面目標）
+      all_13min_rate: 0.90
   
   compare_baselines:
     - closest
@@ -197,7 +197,7 @@ evaluation:
     - critical_6min_rate
     - achieved_13min_rate
     - mean_response_time
-    - area3_specific_rate
+    - area1_specific_rate
 
 training:
   checkpoint_interval: 50
@@ -247,17 +247,19 @@ advanced:
 
 metadata:
   description: |
-    閾値段階強化アプローチ
+    第1方面での閾値段階強化アプローチ
     - Stage 1 (0-300): 10分/15分/20分の緩い基準で基礎学習
     - Stage 2 (300-600): 8分/12分/18分の中間基準
     - Stage 3 (600-900): 7分/10分/15分の標準基準
     - Stage 4 (900-1200): 6分/8分/13分の目標基準
     
-    全傷病度を含むが、目標時間を段階的に厳しくすることで
-    徐々に難易度を上げていく
+    第1方面（千代田区、中央区、港区）に限定した学習
+    都心部の特性を活かした効率的な救急車配車を目指す
     
   notes: |
-    - 軽症のみの学習ではなく、全傷病度で閾値を調整
+    - 第1方面（千代田区、中央区、港区）限定の実験
+    - section=1の救急隊のみを使用
+    - 都心部の高密度な病院配置を活用
     - 最初は「10分以内に到着」という緩い目標
     - 徐々に「6分以内」という厳しい目標へ
     - 各段階で十分な性能を確保してから次へ
