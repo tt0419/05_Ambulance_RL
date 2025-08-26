@@ -2243,8 +2243,11 @@ def create_simulation_visualizations_enhanced(report: Dict, output_dir: str):
     os.makedirs(output_dir, exist_ok=True)
     font_family = 'Meiryo'
     
+    # 統一された傷病度定数をインポート
+    from constants import SEVERITY_LEVELS, SEVERITY_COLORS
+    
     # 傷病度の標準順序を定義
-    SEVERITY_ORDER = ['軽症', '中等症', '重症', '重篤', '死亡']
+    SEVERITY_ORDER = SEVERITY_LEVELS
     
     def sort_severities(severities_list):
         """傷病度リストを標準順序でソートする"""
@@ -2284,7 +2287,7 @@ def create_simulation_visualizations_enhanced(report: Dict, output_dir: str):
         plt.text(0.5, 0.5, '応答時間データなし', ha='center', va='center', fontfamily=font_family)
 
     plt.subplot(1, 2, 2)
-    severity_colors = {'軽症': '#90EE90', '中等症': '#FFD700', '重症': '#FFA500', '重篤': '#FF4500', '死亡': '#8B0000'}
+    severity_colors = SEVERITY_COLORS
     available_severities_rt = list(report['response_times']['by_severity'].keys())
     severities_sorted_rt = sort_severities(available_severities_rt)
     

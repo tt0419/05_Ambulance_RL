@@ -40,8 +40,8 @@ class HierarchicalServiceTimeGenerator:
     def generate_time(self, severity: str, phase: str) -> float:
         """指定されたフェーズの時間を生成（分単位）"""
         
-        # severityがパラメータに存在しない場合、'その他'を試し、それもなければ'軽症'にフォールバック
-        severity_params = self.params.get(severity, self.params.get('その他', self.params.get('軽症', {})))
+        # severityがパラメータに存在しない場合、'軽症'にフォールバック
+        severity_params = self.params.get(severity, self.params.get('軽症', {}))
         
         # フェーズが存在しない場合のフォールバック
         if phase not in severity_params:
@@ -129,6 +129,9 @@ class EMSEnvironment:
         print("初期データ読み込み中...")
         self.data_cache.load_data()
         print("データキャッシュ準備完了")
+        
+        # 統一された傷病度定数をインポート
+        from constants import SEVERITY_GROUPS, is_severe_condition
         
         # 傷病度設定の初期化
         self._setup_severity_mapping()
@@ -916,7 +919,7 @@ class EMSEnvironment:
             self.episode_stats['achieved_13min'] += 1
         
         # 重症系の6分達成率
-        if severity in self.config['severity']['categories']['critical']['conditions']:
+        if is_severe_condition(severity):
             self.episode_stats['critical_total'] += 1
             if rt_minutes <= 6.0:
                 self.episode_stats['critical_6min'] += 1

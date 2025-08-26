@@ -33,7 +33,7 @@ severity:
   # 傷病度カテゴリと重み（重症・重篤・死亡は同じ重み）
   categories:
     critical:
-      conditions: ["重篤", "重症", "死亡"]  # ← 同じ重み
+      conditions: ["重症", "重篤", "死亡"]  # ← 順序を統一（baseline_comparison.pyと同じ）
       reward_weight: 5.0  # ← 変更箇所：重症系の重み
       time_limit_seconds: 360  # 6分目標
       

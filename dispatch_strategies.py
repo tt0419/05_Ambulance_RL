@@ -14,12 +14,19 @@ import numpy as np
 import h3
 from collections import defaultdict
 
+# 統一された傷病度定数をインポート
+from constants import (
+    SEVERITY_GROUPS, SEVERITY_PRIORITY, SEVERITY_TIME_LIMITS,
+    is_severe_condition, is_mild_condition, get_severity_time_limit
+)
+
 class DispatchPriority(Enum):
-    """緊急度優先度"""
-    CRITICAL = 1  # 重篤
-    HIGH = 2      # 重症
-    MEDIUM = 3    # 中等症・死亡
-    LOW = 4       # 軽症
+    """緊急度優先度（数値が小さいほど緊急度が高い）"""
+    CRITICAL = 2  # 重篤
+    HIGH = 3      # 重症
+    MEDIUM = 4    # 中等症
+    FATAL = 1     # 死亡（最優先）
+    LOW = 5       # 軽症
 
 @dataclass
 class EmergencyRequest:
@@ -85,14 +92,13 @@ class DispatchStrategy(ABC):
         return self.strategy_type in ['reinforcement_learning', 'optimization']
     
     def get_severity_priority(self, severity: str) -> DispatchPriority:
-        """傷病度から優先度を取得"""
+        """傷病度から優先度を取得（統一された定数を使用）"""
         severity_map = {
             '重篤': DispatchPriority.CRITICAL,
             '重症': DispatchPriority.HIGH,
             '中等症': DispatchPriority.MEDIUM,
-            '死亡': DispatchPriority.MEDIUM,
-            '軽症': DispatchPriority.LOW,
-            'その他': DispatchPriority.LOW
+            '死亡': DispatchPriority.FATAL,  # 死亡は最優先
+            '軽症': DispatchPriority.LOW
         }
         return severity_map.get(severity, DispatchPriority.LOW)
 
@@ -131,8 +137,9 @@ class SeverityBasedStrategy(DispatchStrategy):
     
     def __init__(self):
         super().__init__("severity_based", "rule_based")
-        self.severe_conditions = ['重症', '重篤', '死亡']
-        self.mild_conditions = ['軽症', '中等症']
+        # 統一された定数を使用
+        self.severe_conditions = SEVERITY_GROUPS['severe_conditions']
+        self.mild_conditions = SEVERITY_GROUPS['mild_conditions']
         self.coverage_radius_km = 5.0
         self.time_threshold_6min = 360
         self.time_threshold_13min = 780
@@ -140,15 +147,8 @@ class SeverityBasedStrategy(DispatchStrategy):
         # デフォルトのパラメータをここで定義
         self.time_score_weight = 0.6  # デフォルトは60%
         self.coverage_loss_weight = 0.4 # デフォルトは40%
-        self.mild_time_limit_sec = 780  # 軽症のデフォルトは13分
-        self.moderate_time_limit_sec = 780 # 中等症のデフォルトは13分
-        
-        # 新規追加: 傷病度別の時間制限（設定可能に）
-        self.time_limits = {
-            '軽症': 1080,    # 18分
-            '中等症': 900,   # 15分
-            'その他': 780    # 13分（デフォルト）
-        }
+        self.mild_time_limit_sec = SEVERITY_TIME_LIMITS['軽症']  # 統一された定数を使用
+        self.moderate_time_limit_sec = SEVERITY_TIME_LIMITS['中等症']  # 統一された定数を使用
         
     def initialize(self, config: Dict):
         """戦略の初期化"""
@@ -176,11 +176,11 @@ class SeverityBasedStrategy(DispatchStrategy):
         if not available_ambulances:
             return None
         
-        # 重症・重篤・死亡の場合は最寄りを選択
-        if request.severity in self.severe_conditions:
+        # 重症系の場合は最寄りを選択
+        if is_severe_condition(request.severity):
             return self._select_closest(request, available_ambulances, travel_time_func)
         
-        # 軽症・中等症の場合はカバレッジを考慮
+        # 軽症系の場合はカバレッジを考慮
         return self._select_with_coverage(request, available_ambulances, travel_time_func, context)
     
     def _select_closest(self,
@@ -214,13 +214,8 @@ class SeverityBasedStrategy(DispatchStrategy):
         #     if travel_time <= self.time_threshold_13min:
         #         candidates.append((amb, travel_time))
         
-        # 傷病度に応じて制限時間を設定
-        if request.severity == '軽症':
-            time_limit = self.mild_time_limit_sec  # ★修正: 外部設定可能に
-        elif request.severity == '中等症':
-            time_limit = self.moderate_time_limit_sec  # ★修正: 外部設定可能に
-        else:
-            time_limit = self.time_threshold_13min  # 13分（デフォルト）
+        # 傷病度に応じて制限時間を設定（統一された定数を使用）
+        time_limit = get_severity_time_limit(request.severity)
         
         candidates = []
         for amb in available_ambulances:
@@ -393,11 +388,11 @@ class AdvancedSeverityStrategy(DispatchStrategy):
     def __init__(self):
         super().__init__("advanced_severity", "rule_based")
         
-        # 傷病度カテゴリ
-        self.critical_conditions = ['重篤']  # 最優先
-        self.severe_conditions = ['重症', '死亡']  # 高優先
-        self.moderate_conditions = ['中等症']  # 中優先
-        self.mild_conditions = ['軽症']  # 低優先
+        # 傷病度カテゴリ（統一された定数を使用）
+        self.critical_conditions = SEVERITY_GROUPS['critical_conditions']  # 最優先
+        self.severe_conditions = SEVERITY_GROUPS['severe_conditions']  # 高優先
+        self.moderate_conditions = SEVERITY_GROUPS['moderate_conditions']  # 中優先
+        self.mild_conditions = SEVERITY_GROUPS['mild_conditions']  # 低優先
         
         # 戦略パラメータ
         self.params = {

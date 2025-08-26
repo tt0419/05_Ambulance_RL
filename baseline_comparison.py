@@ -13,7 +13,7 @@ import os
 import json
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime  # ★★★ datetimeを直接インポート
 import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Dict, List
@@ -32,6 +32,9 @@ plt.rcParams['font.size'] = 12
 
 # ディスパッチ戦略のインポート
 from dispatch_strategies import STRATEGY_CONFIGS
+
+# 統一された傷病度定数をインポート
+from constants import SEVERITY_GROUPS
 
 # ============================================================
 # 【設定変更箇所1】実験設定
@@ -61,12 +64,12 @@ EXPERIMENT_CONFIG = {
         'closest': {},  # デフォルト設定
         'severity_based': {
             'coverage_radius_km': 5.0,
-            'severe_conditions': ['重症', '重篤', '死亡'],
-            'mild_conditions': ['軽症', '中等症'],
+            'severe_conditions': SEVERITY_GROUPS['severe_conditions'],  # 統一された定数を使用
+            'mild_conditions': SEVERITY_GROUPS['mild_conditions'],      # 統一された定数を使用
             
             # ★★★ 新規追加: パラメータ設定 ★★★
-            'time_score_weight': 0.2,            # 応答時間の重みを20%に
-            'coverage_loss_weight': 0.8,         # カバレッジ損失の重みを80%に
+            'time_score_weight': 0.8,            # 応答時間の重みを20%に
+            'coverage_loss_weight': 0.2,         # カバレッジ損失の重みを80%に
             'mild_time_limit_sec': 1080,         # 軽症の許容時間を18分(1080秒)に
             'moderate_time_limit_sec': 900       # 中等症の許容時間を15分(900秒)に
         },
@@ -138,6 +141,10 @@ def run_comparison_experiment(
         for run_idx in range(num_runs):
             print(f"  実行 {run_idx + 1}/{num_runs}...")
             
+            # ★★★ 変更点: 実行日時を取得して、wandbの実行名を生成 ★★★
+            run_timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+            run_name = f"{strategy}-{run_timestamp}"
+            
             # ★★★ 修正: matplotlibの状態をリセット ★★★
             plt.close('all')  # 全てのプロットを閉じる
             
@@ -161,7 +168,8 @@ def run_comparison_experiment(
                     project=wandb_project,
                     config=config_for_wandb,
                     group=f"{strategy}-{target_date}", # 同じ戦略の実行をグループ化
-                    name=f"run-{run_idx + 1}",
+                    # ★★★ 変更点: 生成した実行名を設定 ★★★
+                    name=run_name,
                     job_type="simulation",
                     tags=["baseline", strategy],
                     reinit=True # ループ内で複数回initを呼ぶために必要
@@ -192,10 +200,32 @@ def run_comparison_experiment(
                             report = json.load(f)
                             results[strategy].append(report)
                             
-                            # ★★★ 変更点: 結果をフラット化してwandbに記録 ★★★
-                            flat_report = flatten_dict(report)
-                            wandb.log(flat_report)
-                            print(f"  - wandbに結果を記録しました。")
+                            # ★★★ 変更点: PPOのメトリクス名にマッピングしてログを記録 ★★★
+                            # 1. PPOと共通の主要メトリクスを抽出・名前変更
+                            unified_metrics = {}
+                            rt_stats = report.get('response_times', {})
+                            
+                            # 全体平均RT
+                            unified_metrics['charts/response_time_mean'] = rt_stats.get('overall', {}).get('mean', 0)
+                            
+                            # 傷病度別平均RT
+                            rt_by_severity = rt_stats.get('by_severity', {})
+                            unified_metrics['charts/response_time_mild_mean'] = rt_by_severity.get('軽症', {}).get('mean', 0)
+                            unified_metrics['charts/response_time_moderate_mean'] = rt_by_severity.get('中等症', {}).get('mean', 0)
+                            unified_metrics['charts/response_time_severe_mean'] = rt_by_severity.get('重症', {}).get('mean', 0)
+                            unified_metrics['charts/response_time_critical_mean'] = rt_by_severity.get('重篤', {}).get('mean', 0)
+                            
+                            # 重症6分以内到着率
+                            th_by_severity = report.get('threshold_performance', {}).get('by_severity', {}).get('6_minutes', {})
+                            unified_metrics['charts/response_time_severe_under_6min_rate'] = th_by_severity.get('重症', {}).get('rate', 0)
+                            
+                            # 2. 統一されたメトリクスをwandbに記録
+                            wandb.log(unified_metrics)
+                            
+                            # 3. (オプション) 元の詳細なレポートも別途記録
+                            wandb.log({"full_report": report})
+
+                            print(f"  - wandbに統一されたメトリクスを記録しました。 (Run Name: {run_name})")
                     
                     except FileNotFoundError:
                         print(f"  - エラー: レポートファイルが見つかりません: {report_path}")

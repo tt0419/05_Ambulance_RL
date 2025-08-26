@@ -13,6 +13,9 @@ from datetime import datetime
 from tqdm import tqdm
 import wandb
 
+# 統一された傷病度定数をインポート
+from constants import get_severity_english
+
 from ..environment.ems_environment import EMSEnvironment
 from ..agents.ppo_agent import PPOAgent
 
@@ -359,8 +362,8 @@ class PPOTrainer:
             if stats and 'response_times_by_severity' in stats:
                 for severity, times in stats['response_times_by_severity'].items():
                     if times:
-                        # 日本語をアンダースコアに変換
-                        severity_key = severity.replace('重篤', 'critical').replace('重症', 'severe').replace('死亡', 'fatal').replace('中等症', 'moderate').replace('軽症', 'mild')
+                        # 統一された傷病度英語マッピングを使用
+                        severity_key = get_severity_english(severity)
                         log_data[f'severity/{severity_key}_mean_time'] = np.mean(times)
                         log_data[f'severity/{severity_key}_6min_rate'] = sum(1 for t in times if t <= 6) / len(times)
                         log_data[f'severity/{severity_key}_count'] = len(times)

@@ -36,11 +36,14 @@ class RewardDesigner:
         if self.use_continuous:
             self._setup_continuous_params()
         
+        # 統一された傷病度定数をインポート
+        from constants import SEVERITY_GROUPS
+        
         # 初期化メッセージは1回だけ（verboseフラグで制御）
         if config.get('verbose', False):
             mode = "連続報酬" if self.use_continuous else "離散報酬"
             print(f"報酬設計初期化完了（{mode}モード）")
-            print(f"重症系（同一重み）: {self.severity_config['categories']['critical']['conditions']}")
+            print(f"重症系（同一重み）: {SEVERITY_GROUPS['severe_conditions']}")
     
     def _setup_continuous_params(self):
         """連続報酬のパラメータ設定"""
@@ -223,7 +226,7 @@ class RewardDesigner:
             over_minutes = (response_time - golden_time) / 60.0
             
             # 重症系の場合は厳しいペナルティ
-            if severity in self.severity_config['categories']['critical']['conditions']:
+            if severity in SEVERITY_GROUPS['severe_conditions']:
                 penalty += self.penalties['over_6min'] * 2.0  # 2倍のペナルティ
                 penalty += self.penalties['per_minute_over'] * over_minutes * 1.5
             else:

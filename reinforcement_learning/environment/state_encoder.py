@@ -23,11 +23,11 @@ class StateEncoder:
         self.temporal_features = 8  # 時間関連
         self.spatial_features = 20  # 空間統計
         
+        # 統一された傷病度定数をインポート
+        from constants import SEVERITY_INDICES
+        
         # 傷病度のone-hotエンコーディング用
-        self.severity_indices = {
-            '重篤': 0, '重症': 1, '死亡': 2,
-            '中等症': 3, '軽症': 4, 'その他': 5
-        }
+        self.severity_indices = SEVERITY_INDICES
         
     def encode_state(self, state_dict: Dict, grid_mapping: Dict) -> np.ndarray:
         """
@@ -120,11 +120,9 @@ class StateEncoder:
         severity_idx = self.severity_indices.get(severity, 5)
         features[2 + severity_idx] = 1.0
         
-        # 傷病度の重み（連続値）
-        severity_weights = {
-            '重篤': 1.0, '重症': 1.0, '死亡': 1.0,  # 同じ重み
-            '中等症': 0.4, '軽症': 0.2, 'その他': 0.1
-        }
+        # 統一された傷病度重みを使用
+        from constants import SEVERITY_WEIGHTS
+        severity_weights = SEVERITY_WEIGHTS
         features[8] = severity_weights.get(severity, 0.1)
         
         # 事案の存在フラグ
