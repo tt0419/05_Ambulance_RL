@@ -12,6 +12,10 @@ from enum import Enum
 import json
 import h3
 from tqdm import tqdm
+# ★★★ 修正: matplotlibバックエンドを非インタラクティブに設定 ★★★
+import matplotlib
+matplotlib.use('Agg')  # ファイル出力専用バックエンド
+
 import matplotlib.pyplot as plt
 from pathlib import Path
 import pickle

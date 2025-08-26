@@ -137,6 +137,12 @@ class SeverityBasedStrategy(DispatchStrategy):
         self.time_threshold_6min = 360
         self.time_threshold_13min = 780
         
+        # デフォルトのパラメータをここで定義
+        self.time_score_weight = 0.6  # デフォルトは60%
+        self.coverage_loss_weight = 0.4 # デフォルトは40%
+        self.mild_time_limit_sec = 780  # 軽症のデフォルトは13分
+        self.moderate_time_limit_sec = 780 # 中等症のデフォルトは13分
+        
         # 新規追加: 傷病度別の時間制限（設定可能に）
         self.time_limits = {
             '軽症': 1080,    # 18分
@@ -154,6 +160,12 @@ class SeverityBasedStrategy(DispatchStrategy):
             self.severe_conditions = config['severe_conditions']
         if 'mild_conditions' in config:
             self.mild_conditions = config['mild_conditions']
+        
+        # ★★★ 新規追加: 重みパラメータと時間制限の設定 ★★★
+        self.time_score_weight = config.get('time_score_weight', self.time_score_weight)
+        self.coverage_loss_weight = config.get('coverage_loss_weight', self.coverage_loss_weight)
+        self.mild_time_limit_sec = config.get('mild_time_limit_sec', self.mild_time_limit_sec)
+        self.moderate_time_limit_sec = config.get('moderate_time_limit_sec', self.moderate_time_limit_sec)
     
     def select_ambulance(self,
                         request: EmergencyRequest,
@@ -204,9 +216,9 @@ class SeverityBasedStrategy(DispatchStrategy):
         
         # 傷病度に応じて制限時間を設定
         if request.severity == '軽症':
-            time_limit = 780  # 13分（v2時点の設定）
+            time_limit = self.mild_time_limit_sec  # ★修正: 外部設定可能に
         elif request.severity == '中等症':
-            time_limit = 780   # 13分（v2時点の設定）
+            time_limit = self.moderate_time_limit_sec  # ★修正: 外部設定可能に
         else:
             time_limit = self.time_threshold_13min  # 13分（デフォルト）
         
@@ -236,10 +248,11 @@ class SeverityBasedStrategy(DispatchStrategy):
             # time_score = travel_time / self.time_threshold_13min
             # combined_score = time_score * 0.4 + coverage_loss * 0.6
             
-            # 複合スコア（応答時間40%、カバレッジ60%の重み付け）
+            # 複合スコア（重みは外部設定可能）
             # 応答時間は13分で正規化
             time_score = travel_time / self.time_threshold_13min
-            combined_score = time_score * 0.6 + coverage_loss * 0.4
+            combined_score = (time_score * self.time_score_weight + 
+                              coverage_loss * self.coverage_loss_weight)  # ★修正: 外部設定可能に
             
             if combined_score < best_score:
                 best_score = combined_score

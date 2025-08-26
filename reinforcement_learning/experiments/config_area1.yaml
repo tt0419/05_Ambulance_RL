@@ -1,10 +1,10 @@
-# PPO第1方面限定実験 - 閾値段階強化版
-# 緩い基準から徐々に厳しくしていくアプローチ
+# 第1方面 - 直近隊運用の模倣から始める段階的改善
+# 最近接戦略を教師として、重症系のみ徐々に改善
 
 experiment:
-  name: ppo_area1_threshold_v1
-  description: "第1方面での閾値を段階的に厳しくする学習"
-  seed: 1111
+  name: ppo_area1_imitation_v1
+  description: "直近隊運用の模倣学習から段階的改善"
+  seed: 2222
   device: cpu
 
 data:
@@ -17,128 +17,142 @@ data:
       - 中央区
       - 港区
   
-  episode_duration_hours: 4
+  # エピソードを長くして事案数を増やす
+  episode_duration_hours: 24  # 24時間に延長
   
   train_periods:
     - start_date: "20230401"
-      end_date: "20230407"
+      end_date: "20230415"  # 2週間分のデータ
   
   eval_periods:
-    - start_date: "20230408"
-      end_date: "20230409"
+    - start_date: "20230416"
+      end_date: "20230420"
 
 ppo:
-  n_episodes: 2000
-  batch_size: 96
+  n_episodes: 3000  # 十分なエピソード数
+  batch_size: 256   # 事案数増加に対応
   
-  # 安定した学習率
+  # 極めて保守的な学習率
   learning_rate:
-    actor: 0.00008
-    critic: 0.00015
-    scheduler: constant  # 一定に保つ
+    actor: 0.00001     # 非常に小さい学習率
+    critic: 0.00005    # Criticも小さめ
+    scheduler: constant
   
-  n_epochs: 4
-  clip_epsilon: 0.15
+  # 保守的なPPOパラメータ
+  n_epochs: 2          # エポック数を減らす
+  clip_epsilon: 0.05   # クリップ範囲を狭める（保守的）
   gamma: 0.99
   gae_lambda: 0.95
-  entropy_coef: 0.02
+  entropy_coef: 0.001  # 探索を最小限に
   value_loss_coeff: 1.0
-  max_grad_norm: 0.5
-  target_kl: 0.02
+  max_grad_norm: 0.1   # 勾配クリップを厳しく
+  target_kl: 0.005     # KL divergenceを厳格に制限
 
-# 段階的な閾値設定（エピソード数で区切る）
-threshold_curriculum:
-  enabled: true
-  stages:
-    # Stage 1: 緩い基準（0-300エピソード）
-    - episodes: [0, 300]
-      thresholds:
-        critical_target: 10    # 10分（緩い）
-        moderate_target: 15    # 15分
-        mild_target: 20        # 20分
-        penalty_scale: 0.3     # ペナルティ緩め
-      
-    # Stage 2: 中間基準（300-600エピソード）
-    - episodes: [300, 600]
-      thresholds:
-        critical_target: 8     # 8分
-        moderate_target: 12    # 12分
-        mild_target: 18        # 18分
-        penalty_scale: 0.6
-      
-    # Stage 3: 標準基準（600-900エピソード）
-    - episodes: [600, 900]
-      thresholds:
-        critical_target: 7     # 7分
-        moderate_target: 10    # 10分
-        mild_target: 15        # 15分
-        penalty_scale: 0.8
-      
-    # Stage 4: 目標基準（900-1200エピソード）
-    - episodes: [900, 2000]
-      thresholds:
-        critical_target: 6     # 6分（目標）
-        moderate_target: 8     # 8分
-        mild_target: 13        # 13分
-        penalty_scale: 1.0
-
-# 報酬設計（段階的閾値と連動）
+# 報酬設計：直近隊との差分を最小化しつつ重症改善
 reward:
-  base_reward: 80.0  # 高めの基本報酬
+  base_reward: 0.0
   
-  # 基本ペナルティ（段階的に調整される）
-  penalties:
-    over_6min: -1.5
-    over_13min: -4.0
-    per_minute_over: -0.08
+  # 1. 模倣報酬（最重要）
+  imitation:
+    match_closest: 10.0      # 最近接と同じ選択をしたら報酬
+    deviation_penalty: -5.0  # 異なる選択をしたらペナルティ
+    
+    # ただし重症系では例外
+    critical_exception:
+      better_than_closest: 50.0  # 最近接より早く到着したら大報酬
+      worse_than_closest: -10.0  # 最近接より遅いとペナルティ
   
-  weights:
-    response_time: -0.15
-    severity_bonus: 12.0
-    coverage_preservation: 0.05
-    threshold_penalty: -1.5
+  # 2. 応答時間報酬（傷病度別・段階的）
+  response_time:
+    critical:  # 重篤・重症・死亡（最重要）
+      under_5min: 100.0   # 5分以内：大成功
+      under_6min: 50.0    # 6分以内：成功
+      under_8min: 20.0    # 8分以内：許容
+      over_8min: -20.0    # 8分超：失敗
+      
+    moderate:  # 中等症
+      under_10min: 10.0
+      under_13min: 5.0
+      over_13min: -5.0
+      
+    mild:  # 軽症（最近接に従う）
+      follow_closest: 5.0   # 最近接と同じなら小報酬
+      different: -2.0       # 異なる選択は小ペナルティ
   
-  # 連続報酬（閾値は動的に変更）
-  use_continuous: true
-  continuous_params:
-    # これらの値は threshold_curriculum で上書きされる
-    critical:
-      target: 10  # 初期値（Stage 1）
-      max_bonus: 250
-      penalty_scale: 1.5
-    moderate:
-      target: 15
-      max_bonus: 80
-      penalty_scale: 0.4
-    mild:
-      target: 20
-      max_bonus: 25
-      penalty_scale: 0.2
+  # 3. 改善ボーナス（段階的に増加）
+  improvement_bonus:
+    # エピソード数に応じて重症改善の重みを増やす
+    episode_0_1000:
+      critical_improvement: 10.0   # 初期は小さめ
+    episode_1000_2000:
+      critical_improvement: 30.0   # 中期で増加
+    episode_2000_3000:
+      critical_improvement: 50.0   # 後期で最大
+  
+  # 4. 全体性能維持
+  performance_maintenance:
+    below_baseline_13min: -20.0  # 13分達成率が基準以下
+    maintain_baseline: 10.0      # 基準維持で報酬
 
-# 教師あり学習（段階的に減少）
+# 教師あり学習（最近接戦略を教師とする）
 teacher:
   enabled: true
-  initial_prob: 0.90
-  final_prob: 0.35
-  decay_episodes: 800
+  strategy: closest  # 最近接戦略を教師に
+  
+  # 段階的に独立性を増やす
+  initial_prob: 0.95   # 最初はほぼ完全に模倣
+  final_prob: 0.50     # 最終的にも50%は教師に従う
+  decay_episodes: 2000 # ゆっくり減衰
+  
+  # 重症系では早期に独立
+  severity_specific:
+    critical_teacher_prob: 0.30  # 重症系は30%のみ教師
+    mild_teacher_prob: 0.80      # 軽症は80%教師に従う
   
   adaptive_recovery:
     enabled: true
-    check_interval: 30
-    min_performance: 0.35
+    check_interval: 50
+    min_performance: 0.80  # 最近接の80%性能を維持
 
-# ネットワーク
+# カリキュラム学習（段階的目標）
+curriculum:
+  enabled: true
+  stages:
+    # Stage 1: 模倣学習（0-1000）
+    - episodes: [0, 1000]
+      focus: imitation
+      goals:
+        match_closest_rate: 0.90  # 90%は最近接と同じ
+        critical_improvement: 0.0  # まだ改善を求めない
+      
+    # Stage 2: 重症系の探索開始（1000-2000）
+    - episodes: [1000, 2000]
+      focus: critical_exploration
+      goals:
+        match_closest_rate: 0.70  # 70%は最近接
+        critical_6min_rate: 0.30  # 重症30%を6分以内に
+      
+    # Stage 3: 重症系の最適化（2000-3000）
+    - episodes: [2000, 3000]
+      focus: critical_optimization
+      goals:
+        match_closest_rate: 0.50  # 50%は最近接
+        critical_6min_rate: 0.50  # 重症50%を6分以内に
+        maintain_13min_rate: 0.85  # 全体性能維持
+
+# ネットワーク（シンプルで安定）
 network:
   actor:
-    hidden_layers: [96, 48]  # 少し大きめ
-    activation: relu  # ReLUに戻す
-    dropout: 0.0
-    
-  critic:
-    hidden_layers: [96, 48]
+    hidden_layers: [64, 32]
     activation: relu
     dropout: 0.0
-    init_scale: 0.01
+    initialization: xavier_uniform  # 安定した初期化
+    
+  critic:
+    hidden_layers: [64, 32]
+    activation: relu
+    dropout: 0.0
+    init_scale: 0.001  # 非常に小さい初期値
     
   state_encoder:
     ambulance_features: 4
@@ -146,121 +160,78 @@ network:
     temporal_features: 8
     spatial_features: 20
 
-# 傷病度設定（固定）
-severity:
-  categories:
-    critical:
-      conditions: [重篤, 重症, 死亡]
-      reward_weight: 25  # 重症系を最重視
-      time_limit_seconds: 600  # 10分（初期）
-      
-    moderate:
-      conditions: [中等症]
-      reward_weight: 8
-      time_limit_seconds: 900  # 15分（初期）
-      
-    mild:
-      conditions: [軽症]
-      reward_weight: 2
-      time_limit_seconds: 1200  # 20分（初期）
-      
-  thresholds:
-    golden_time: 600    # 10分（初期）
-    standard_time: 900  # 15分（初期）
-
 # 評価設定
 evaluation:
-  interval: 25
-  n_eval_episodes: 5
+  interval: 50  # 50エピソードごと
+  n_eval_episodes: 10  # より多くの評価
   eval_deterministic: true
-  
-  # 段階別の期待性能
-  stage_targets:
-    stage_1:
-      critical_10min_rate: 0.85  # 10分で85%（第1方面は都心部でアクセス良好）
-      all_20min_rate: 0.98
-    stage_2:
-      critical_8min_rate: 0.75   # 8分で75%
-      all_18min_rate: 0.95
-    stage_3:
-      critical_7min_rate: 0.65   # 7分で65%
-      all_15min_rate: 0.90
-    stage_4:
-      critical_6min_rate: 0.50   # 6分で50%（第1方面目標）
-      all_13min_rate: 0.90
-  
-  compare_baselines:
-    - closest
-    - severity_based
   
   metrics:
     - critical_6min_rate
     - achieved_13min_rate
     - mean_response_time
-    - area1_specific_rate
+    - vs_closest_improvement  # 最近接との比較
+  
+  compare_baselines:
+    - closest  # 主要な比較対象
+  
+  # 成功基準
+  success_criteria:
+    critical_improvement: 0.1   # 重症系10%改善
+    maintain_overall: 0.95      # 全体性能95%維持
 
 training:
-  checkpoint_interval: 50
-  keep_last_n: 12
+  checkpoint_interval: 100
+  keep_last_n: 20
   
-  # 段階移行時の処理
-  stage_transition:
-    reset_optimizer: false  # オプティマイザはリセットしない
-    log_transition: true
-    
+  # 安定性重視の設定
+  gradient_accumulation: 4  # 勾配を蓄積して安定化
+  
   early_stopping:
-    enabled: true
-    patience: 400
-    min_delta: 0.002
-    min_episodes: 400
+    enabled: false  # 長期学習のため無効
     
   logging:
-    interval: 5
+    interval: 10
     log_level: INFO
     tensorboard: true
     wandb: true
     
-    threshold_logs:
-      - current_thresholds
-      - stage_number
-      - achievement_rates
+    detailed_logs:
+      - imitation_rate  # 模倣率
+      - critical_performance
+      - deviation_from_closest
 
 advanced:
-  # 追加の安定化機能
-  gradient_clipping:
-    method: global_norm
-    max_norm: 0.5
+  # 安定化技術
+  stabilization:
+    gradient_clipping: true
+    value_clipping: true
+    advantage_normalization: true
     
-  # 報酬の移動平均
-  reward_smoothing:
-    enabled: true
-    window_size: 50
-    
-  # 経験の優先度付け
-  experience_prioritization:
-    enabled: true
-    method: td_error  # TD誤差ベース
-    
-  debug:
-    log_threshold_changes: true
-    save_stage_checkpoints: true
+  # 最近接との比較
+  baseline_comparison:
+    track_difference: true
+    penalty_for_worse: true
+    reward_for_better: true
 
 metadata:
   description: |
-    第1方面での閾値段階強化アプローチ
-    - Stage 1 (0-300): 10分/15分/20分の緩い基準で基礎学習
-    - Stage 2 (300-600): 8分/12分/18分の中間基準
-    - Stage 3 (600-900): 7分/10分/15分の標準基準
-    - Stage 4 (900-1200): 6分/8分/13分の目標基準
+    直近隊運用の模倣学習ベースアプローチ
     
-    第1方面（千代田区、中央区、港区）に限定した学習
-    都心部の特性を活かした効率的な救急車配車を目指す
+    主要戦略：
+    1. 最初は最近接戦略を95%模倣
+    2. 段階的に重症系のみ改善を試みる
+    3. 軽症・中等症は最近接に従う
+    4. 全体性能を維持しつつ重症改善
+    
+    3段階カリキュラム：
+    - Stage 1: 完全模倣（基礎学習）
+    - Stage 2: 重症系の探索開始
+    - Stage 3: 重症系の最適化
     
   notes: |
-    - 第1方面（千代田区、中央区、港区）限定の実験
-    - section=1の救急隊のみを使用
-    - 都心部の高密度な病院配置を活用
-    - 最初は「10分以内に到着」という緩い目標
-    - 徐々に「6分以内」という厳しい目標へ
-    - 各段階で十分な性能を確保してから次へ
-    - 重症系の重みを高く設定（25倍）
+    - 24時間エピソードで事案数確保（約100件/日）
+    - 極めて保守的な学習率で安定性重視
+    - 最近接の良さを維持しつつ改善
+    - 重症系（全体の10%）のみに焦点
+    - 3000エピソードで十分な学習機会

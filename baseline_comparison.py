@@ -19,6 +19,13 @@ import seaborn as sns
 from typing import Dict, List
 from scipy import stats
 
+# ★★★ 変更点: wandbをインポート ★★★
+import wandb
+
+# ★★★ 修正: matplotlibバックエンドを非インタラクティブに設定 ★★★
+import matplotlib
+matplotlib.use('Agg')  # ファイル出力専用バックエンド
+
 # 日本語フォント設定
 plt.rcParams['font.family'] = 'Meiryo'
 plt.rcParams['font.size'] = 12
@@ -55,26 +62,55 @@ EXPERIMENT_CONFIG = {
         'severity_based': {
             'coverage_radius_km': 5.0,
             'severe_conditions': ['重症', '重篤', '死亡'],
-            'mild_conditions': ['軽症', '中等症']
+            'mild_conditions': ['軽症', '中等症'],
+            
+            # ★★★ 新規追加: パラメータ設定 ★★★
+            'time_score_weight': 0.2,            # 応答時間の重みを20%に
+            'coverage_loss_weight': 0.8,         # カバレッジ損失の重みを80%に
+            'mild_time_limit_sec': 1080,         # 軽症の許容時間を18分(1080秒)に
+            'moderate_time_limit_sec': 900       # 中等症の許容時間を15分(900秒)に
         },
         'advanced_severity': STRATEGY_CONFIGS['aggressive']  # 推奨設定
     }
 }
 
+# ★★★ 変更点: レポートの辞書をフラット化するヘルパー関数を追加 ★★★
+def flatten_dict(d, parent_key='', sep='.'):
+    """ネストした辞書をフラットな辞書に変換する"""
+    items = []
+    for k, v in d.items():
+        new_key = parent_key + sep + k if parent_key else k
+        if isinstance(v, dict):
+            items.extend(flatten_dict(v, new_key, sep=sep).items())
+        else:
+            items.append((new_key, v))
+    return dict(items)
+
 def run_comparison_experiment(
     target_date: str,
     duration_hours: int = 168,
     num_runs: int = 5,
-    output_base_dir: str = 'data/tokyo/experiments'
+    output_base_dir: str = 'data/tokyo/experiments',
+    # ★★★ 変更点: wandbのプロジェクト名を受け取る引数を追加 ★★★
+    wandb_project: str = "ambulance-dispatch-simulation"
 ):
+    
+    # ★★★ 修正: wandbの初期設定 ★★★
+    try:
+        wandb.login()
+        print(f"wandbログイン成功: プロジェクト '{wandb_project}' に接続します")
+    except Exception as e:
+        print(f"警告: wandbログインに失敗しました。ローカルモードで実行します: {e}")
+        wandb.init(mode="disabled")
     """
-    複数戦略の比較実験を実行
+    複数戦略の比較実験を実行 (wandb連携版)
     
     Args:
         target_date: シミュレーション開始日（YYYYMMDD形式）
         duration_hours: シミュレーション期間（時間）
         num_runs: 各戦略の実行回数
         output_base_dir: 結果出力ディレクトリ
+        wandb_project: wandbのプロジェクト名
     """
     
     # validation_simulation.pyのrun_validation_simulation関数をインポート
@@ -88,7 +124,8 @@ def run_comparison_experiment(
     results = {strategy: [] for strategy in strategies}
     
     print("=" * 60)
-    print("ディスパッチ戦略比較実験")
+    print("ディスパッチ戦略比較実験 (wandb連携)")
+    print(f"W&B Project: {wandb_project}")
     print(f"対象期間: {target_date} から {duration_hours}時間")
     print(f"実行回数: 各戦略 {num_runs}回")
     print(f"比較戦略: {', '.join([EXPERIMENT_CONFIG['strategy_labels'][s] for s in strategies])}")
@@ -101,29 +138,82 @@ def run_comparison_experiment(
         for run_idx in range(num_runs):
             print(f"  実行 {run_idx + 1}/{num_runs}...")
             
-            # 出力ディレクトリの設定
-            output_dir = os.path.join(
-                output_base_dir,
-                f"{strategy}_{target_date}_{duration_hours}h_run{run_idx + 1}"
-            )
-            os.makedirs(output_dir, exist_ok=True)
+            # ★★★ 修正: matplotlibの状態をリセット ★★★
+            plt.close('all')  # 全てのプロットを閉じる
             
-            # シミュレーション実行
-            run_validation_simulation(
-                target_date_str=target_date,
-                output_dir=output_dir,
-                simulation_duration_hours=duration_hours,
-                random_seed=42 + run_idx,  # 各実行で異なるシード
-                verbose_logging=False,
-                dispatch_strategy=strategy,
-                strategy_config=strategy_configs[strategy]
-            )
+            # --- wandb連携のための設定 ---
             
-            # 結果の読み込み
-            report_path = os.path.join(output_dir, 'simulation_report.json')
-            with open(report_path, 'r', encoding='utf-8') as f:
-                report = json.load(f)
-                results[strategy].append(report)
+            # ★★★ 変更点: wandbに渡すコンフィグ情報を作成 ★★★
+            current_strategy_config = strategy_configs.get(strategy, {})
+            config_for_wandb = {
+                "target_date": target_date,
+                "duration_hours": duration_hours,
+                "num_runs": num_runs,
+                "run_index": run_idx + 1,
+                "random_seed": 42 + run_idx,
+                "dispatch_strategy": strategy,
+                **flatten_dict(current_strategy_config, parent_key='strategy_params')
+            }
+            
+            # ★★★ 修正: wandbの実行をwith文で初期化 ★★★
+            try:
+                with wandb.init(
+                    project=wandb_project,
+                    config=config_for_wandb,
+                    group=f"{strategy}-{target_date}", # 同じ戦略の実行をグループ化
+                    name=f"run-{run_idx + 1}",
+                    job_type="simulation",
+                    tags=["baseline", strategy],
+                    reinit=True # ループ内で複数回initを呼ぶために必要
+                ) as run:
+                    
+                    # 出力ディレクトリの設定
+                    output_dir = os.path.join(
+                        output_base_dir,
+                        f"{strategy}_{target_date}_{duration_hours}h_run{run_idx + 1}"
+                    )
+                    os.makedirs(output_dir, exist_ok=True)
+                    
+                    # シミュレーション実行
+                    run_validation_simulation(
+                        target_date_str=target_date,
+                        output_dir=output_dir,
+                        simulation_duration_hours=duration_hours,
+                        random_seed=42 + run_idx,  # 各実行で異なるシード
+                        verbose_logging=False,
+                        dispatch_strategy=strategy,
+                        strategy_config=current_strategy_config
+                    )
+                    
+                    # 結果の読み込みとwandbへの記録
+                    report_path = os.path.join(output_dir, 'simulation_report.json')
+                    try:
+                        with open(report_path, 'r', encoding='utf-8') as f:
+                            report = json.load(f)
+                            results[strategy].append(report)
+                            
+                            # ★★★ 変更点: 結果をフラット化してwandbに記録 ★★★
+                            flat_report = flatten_dict(report)
+                            wandb.log(flat_report)
+                            print(f"  - wandbに結果を記録しました。")
+                    
+                    except FileNotFoundError:
+                        print(f"  - エラー: レポートファイルが見つかりません: {report_path}")
+                        # ★★★ 変更点: wandbにエラー情報を記録することも可能 ★★★
+                        wandb.log({"error": "report_not_found"})
+
+            except Exception as e:
+                print(f"  - wandb連携エラー: {e}")
+                # wandbのエラーが発生してもシミュレーション結果は保存
+                # 結果をローカルに保存
+                try:
+                    with open(report_path, 'r', encoding='utf-8') as f:
+                        report = json.load(f)
+                        results[strategy].append(report)
+                        print(f"  - ローカルに結果を保存しました")
+                except:
+                    print(f"  - 警告: 結果の保存に失敗しました")
+                continue
     
     # 結果の分析と比較
     print("\n" + "=" * 60)
@@ -517,10 +607,12 @@ if __name__ == "__main__":
     # 【設定変更箇所2】実験パラメータ
     # ============================================================
     EXPERIMENT_PARAMS = {
-        'target_date': "20230401",  # 開始日
-        'duration_hours': 24,       # 30日間
-        'num_runs': 3,              # 各戦略5回実行
-        'output_base_dir': 'data/tokyo/experiments'
+        'target_date': "20240401",  # 開始日
+        'duration_hours': 720,       # 30日間
+        'num_runs': 5,              # 各戦略5回実行
+        'output_base_dir': 'data/tokyo/experiments',
+        # ★★★ 変更点: wandbのプロジェクト名を指定 ★★★
+        'wandb_project': 'ems-dispatch-optimization'
     }
     
     # 実験実行
@@ -528,7 +620,8 @@ if __name__ == "__main__":
         target_date=EXPERIMENT_PARAMS['target_date'],
         duration_hours=EXPERIMENT_PARAMS['duration_hours'],
         num_runs=EXPERIMENT_PARAMS['num_runs'],
-        output_base_dir=EXPERIMENT_PARAMS['output_base_dir']
+        output_base_dir=EXPERIMENT_PARAMS['output_base_dir'],
+        wandb_project=EXPERIMENT_PARAMS['wandb_project']
     )
     
     print("\n実験完了！")
