@@ -1,237 +1,147 @@
-# 第1方面 - 直近隊運用の模倣から始める段階的改善
-# 最近接戦略を教師として、重症系のみ徐々に改善
+# config_area1_revised.yaml
+
+# ★★★【修正点①】★★★
+# どの設定ファイルをベースにするかを指定します。
+# これにより、config.yaml の設定を読み込んだ上で、このファイルの内容で上書きします。
+inherits: ./config.yaml
+
+# ===================================================================
+# 提案改善策を反映した第1方面用設定ファイル
+# 主な戦略：
+# 1. 【報酬の単純化】: 複雑な報酬体系を廃止し、「応答時間ペナルティ」を基本とするシンプルな構造に変更。
+# 2. 【模倣学習の徹底】: 学習初期はほぼ100%直近隊を模倣し、安定したベースラインを確立する (Behavioral Cloningに近い)。
+# 3. 【段階的な自律化】: カリキュラムを通じて、教師（直近隊）からの独立をゆっくりと促し、重症事案の改善のみを探索させる。
+# 4. 【学習の安定化】: Criticの学習を優先し、ハイパーパラメータを安定志向で再調整。
+# ===================================================================
+
+
 
 experiment:
-  name: ppo_area1_imitation_v1
-  description: "直近隊運用の模倣学習から段階的改善"
-  seed: 2222
-  device: cpu
+  name: "ppo_area1_simple_reward_v1"
+  description: "【改善版】単純化した報酬と徹底した模倣学習による段階的改善アプローチ"
+  seed: 2025
+  device: cuda
 
+# -------------------------------------------------------------------
+# データ設定 (変更なし)
+# -------------------------------------------------------------------
 data:
   area_restriction:
     enabled: true
-    area_name: 第一方面
+    area_name: "第一方面"
     section_code: 1
-    districts:
-      - 千代田区
-      - 中央区
-      - 港区
-  
-  # エピソードを長くして事案数を増やす
-  episode_duration_hours: 24  # 24時間に延長
-  
+    districts: ["千代田区", "中央区", "港区"]
+  episode_duration_hours: 24
   train_periods:
     - start_date: "20230401"
-      end_date: "20230415"  # 2週間分のデータ
-  
+      end_date: "20230415"
   eval_periods:
     - start_date: "20230416"
       end_date: "20230420"
 
+# -------------------------------------------------------------------
+# PPOハイパーパラメータ (安定性重視で再調整)
+# -------------------------------------------------------------------
 ppo:
-  n_episodes: 3000  # 十分なエピソード数
-  batch_size: 256   # 事案数増加に対応
+  n_episodes: 3000
+  batch_size: 256
   
-  # 極めて保守的な学習率
+  # 学習率: Criticを少し高めに設定し、価値関数の学習を促進
   learning_rate:
-    actor: 0.00001     # 非常に小さい学習率
-    critic: 0.00005    # Criticも小さめ
+    actor: 0.00003  # 3e-5: 低めに維持
+    critic: 0.0001 # 1e-4: Actorより少し高く設定
     scheduler: constant
   
-  # 保守的なPPOパラメータ
-  n_epochs: 2          # エポック数を減らす
-  clip_epsilon: 0.05   # クリップ範囲を狭める（保守的）
+  # PPOパラメータ: 更新を少しだけ許容
+  n_epochs: 4
+  clip_epsilon: 0.1     # 0.05から少し広げ、更新の停滞を防ぐ
   gamma: 0.99
   gae_lambda: 0.95
-  entropy_coef: 0.001  # 探索を最小限に
-  value_loss_coeff: 1.0
-  max_grad_norm: 0.1   # 勾配クリップを厳しく
-  target_kl: 0.005     # KL divergenceを厳格に制限
+  entropy_coef: 0.01    # 探索の機会をわずかに増やす
+  max_grad_norm: 0.5    # 勾配クリッピングを少し緩和
 
-# 報酬設計：直近隊との差分を最小化しつつ重症改善
+# -------------------------------------------------------------------
+# 報酬設計 (【最重要】抜本的に単純化)
+# -------------------------------------------------------------------
 reward:
-  base_reward: 0.0
+  # 基本方針: 応答時間(分)に応じたペナルティを主軸とし、報酬のスケールを[-5, +5]程度に正規化
   
-  # 1. 模倣報酬（最重要）
-  imitation:
-    match_closest: 10.0      # 最近接と同じ選択をしたら報酬
-    deviation_penalty: -5.0  # 異なる選択をしたらペナルティ
-    
-    # ただし重症系では例外
-    critical_exception:
-      better_than_closest: 50.0  # 最近接より早く到着したら大報酬
-      worse_than_closest: -10.0  # 最近接より遅いとペナルティ
+  # 1. 中核となる時間ペナルティ
+  time_penalty_per_minute: -0.25  # 1分あたり-0.25のペナルティ (例: 8分で-2.0)
   
-  # 2. 応答時間報酬（傷病度別・段階的）
-  response_time:
-    critical:  # 重篤・重症・死亡（最重要）
-      under_5min: 100.0   # 5分以内：大成功
-      under_6min: 50.0    # 6分以内：成功
-      under_8min: 20.0    # 8分以内：許容
-      over_8min: -20.0    # 8分超：失敗
-      
-    moderate:  # 中等症
-      under_10min: 10.0
-      under_13min: 5.0
-      over_13min: -5.0
-      
-    mild:  # 軽症（最近接に従う）
-      follow_closest: 5.0   # 最近接と同じなら小報酬
-      different: -2.0       # 異なる選択は小ペナルティ
+  # 2. ポジティブな行動へのボーナス (報酬シェイピング)
+  critical_under_6min_bonus: 2.0  # 重症系を6分以内で対応できたらボーナス
+  imitation_bonus: 0.5            # 教師と同じ行動をしたら小さなボーナス
   
-  # 3. 改善ボーナス（段階的に増加）
-  improvement_bonus:
-    # エピソード数に応じて重症改善の重みを増やす
-    episode_0_1000:
-      critical_improvement: 10.0   # 初期は小さめ
-    episode_1000_2000:
-      critical_improvement: 30.0   # 中期で増加
-    episode_2000_3000:
-      critical_improvement: 50.0   # 後期で最大
-  
-  # 4. 全体性能維持
-  performance_maintenance:
-    below_baseline_13min: -20.0  # 13分達成率が基準以下
-    maintain_baseline: 10.0      # 基準維持で報酬
+  # 3. 大きな失敗へのペナルティ
+  over_13min_penalty: -2.0        # 13分を超えたら追加ペナルティ
 
-# 教師あり学習（最近接戦略を教師とする）
+  # 【廃止した項目】
+  # - 複雑な傷病度別・時間段階別の報酬/ペナルティ
+  # - エピソード数に応じた動的ボーナス
+  # - 直近隊との乖離に対する直接的なペナルティ (imitation_bonusで代替)
+
+# -------------------------------------------------------------------
+# 教師あり学習 (模倣をさらに強化)
+# -------------------------------------------------------------------
 teacher:
   enabled: true
-  strategy: closest  # 最近接戦略を教師に
+  strategy: closest  # 教師は直近隊戦略
   
-  # 段階的に独立性を増やす
-  initial_prob: 0.95   # 最初はほぼ完全に模倣
-  final_prob: 0.50     # 最終的にも50%は教師に従う
-  decay_episodes: 2000 # ゆっくり減衰
-  
-  # 重症系では早期に独立
-  severity_specific:
-    critical_teacher_prob: 0.30  # 重症系は30%のみ教師
-    mild_teacher_prob: 0.80      # 軽症は80%教師に従う
-  
-  adaptive_recovery:
-    enabled: true
-    check_interval: 50
-    min_performance: 0.80  # 最近接の80%性能を維持
+  # カリキュラム: 最初はほぼ完全に模倣し、ゆっくり自律させる
+  initial_prob: 0.99   # ほぼ100%模倣からスタート
+  final_prob: 0.30     # 最終的にも30%は教師を参考にする
+  decay_episodes: 2500 # 2500エピソードかけてゆっくり減衰
 
-# カリキュラム学習（段階的目標）
+  # 【単純化】傷病度別の教師確率を廃止し、単一の減衰スケジュールに統一
+
+# -------------------------------------------------------------------
+# カリキュラム学習 (フェーズを単純化)
+# -------------------------------------------------------------------
 curriculum:
   enabled: true
   stages:
-    # Stage 1: 模倣学習（0-1000）
-    - episodes: [0, 1000]
-      focus: imitation
+    # フェーズ1: 模倣による基礎学習 (0-1500エピソード)
+    - episodes: [0, 1500]
+      description: "徹底的な模倣フェーズ。teacher_probは高水準 (0.99 -> 0.6) を維持。"
       goals:
-        match_closest_rate: 0.90  # 90%は最近接と同じ
-        critical_improvement: 0.0  # まだ改善を求めない
-      
-    # Stage 2: 重症系の探索開始（1000-2000）
-    - episodes: [1000, 2000]
-      focus: critical_exploration
+        - "vs_closest_improvement > -0.1" # ベースライン性能の90%以上を維持
+        
+    # フェーズ2: 誘導付き改善 (1500-3000エピソード)
+    - episodes: [1500, 3000]
+      description: "模倣を続けつつ(teacher_prob: 0.6 -> 0.3)、重症事案での改善を探索。"
       goals:
-        match_closest_rate: 0.70  # 70%は最近接
-        critical_6min_rate: 0.30  # 重症30%を6分以内に
-      
-    # Stage 3: 重症系の最適化（2000-3000）
-    - episodes: [2000, 3000]
-      focus: critical_optimization
-      goals:
-        match_closest_rate: 0.50  # 50%は最近接
-        critical_6min_rate: 0.50  # 重症50%を6分以内に
-        maintain_13min_rate: 0.85  # 全体性能維持
+        - "critical_6min_rate > (baseline + 0.05)" # 重症6分率をベースラインから5%改善
+        - "achieved_13min_rate > (baseline - 0.02)" # 全体13分率の悪化を2%以内に抑制
 
-# ネットワーク（シンプルで安定）
+# -------------------------------------------------------------------
+# ネットワーク & 評価設定 (変更なし)
+# -------------------------------------------------------------------
 network:
   actor:
     hidden_layers: [64, 32]
     activation: relu
-    dropout: 0.0
-    initialization: xavier_uniform  # 安定した初期化
-    
+    initialization: xavier_uniform
   critic:
     hidden_layers: [64, 32]
     activation: relu
-    dropout: 0.0
-    init_scale: 0.001  # 非常に小さい初期値
-    
-  state_encoder:
-    ambulance_features: 4
-    incident_features: 10
-    temporal_features: 8
-    spatial_features: 20
+    init_scale: 0.001 # Criticの初期出力をゼロに近づけ安定化
 
-# 評価設定
 evaluation:
-  interval: 50  # 50エピソードごと
-  n_eval_episodes: 10  # より多くの評価
-  eval_deterministic: true
-  
+  interval: 100
+  n_eval_episodes: 10
+  compare_baselines: ["closest"]
   metrics:
-    - critical_6min_rate
-    - achieved_13min_rate
-    - mean_response_time
-    - vs_closest_improvement  # 最近接との比較
-  
-  compare_baselines:
-    - closest  # 主要な比較対象
-  
-  # 成功基準
-  success_criteria:
-    critical_improvement: 0.1   # 重症系10%改善
-    maintain_overall: 0.95      # 全体性能95%維持
+    - "critical_6min_rate"
+    - "achieved_13min_rate"
+    - "mean_response_time"
+    - "vs_closest_improvement"
 
+# -------------------------------------------------------------------
+# 学習管理
+# -------------------------------------------------------------------
 training:
-  checkpoint_interval: 100
-  keep_last_n: 20
-  
-  # 安定性重視の設定
-  gradient_accumulation: 4  # 勾配を蓄積して安定化
-  
-  early_stopping:
-    enabled: false  # 長期学習のため無効
-    
+  checkpoint_interval: 250
   logging:
     interval: 10
-    log_level: INFO
-    tensorboard: true
     wandb: true
-    
-    detailed_logs:
-      - imitation_rate  # 模倣率
-      - critical_performance
-      - deviation_from_closest
-
-advanced:
-  # 安定化技術
-  stabilization:
-    gradient_clipping: true
-    value_clipping: true
-    advantage_normalization: true
-    
-  # 最近接との比較
-  baseline_comparison:
-    track_difference: true
-    penalty_for_worse: true
-    reward_for_better: true
-
-metadata:
-  description: |
-    直近隊運用の模倣学習ベースアプローチ
-    
-    主要戦略：
-    1. 最初は最近接戦略を95%模倣
-    2. 段階的に重症系のみ改善を試みる
-    3. 軽症・中等症は最近接に従う
-    4. 全体性能を維持しつつ重症改善
-    
-    3段階カリキュラム：
-    - Stage 1: 完全模倣（基礎学習）
-    - Stage 2: 重症系の探索開始
-    - Stage 3: 重症系の最適化
-    
-  notes: |
-    - 24時間エピソードで事案数確保（約100件/日）
-    - 極めて保守的な学習率で安定性重視
-    - 最近接の良さを維持しつつ改善
-    - 重症系（全体の10%）のみに焦点
-    - 3000エピソードで十分な学習機会

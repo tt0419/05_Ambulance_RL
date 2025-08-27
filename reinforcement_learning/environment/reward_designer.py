@@ -6,6 +6,12 @@ configで離散/連続報酬を切り替え可能な統合版
 
 import numpy as np
 from typing import Dict, Optional
+import sys
+import os
+
+# 統一された傷病度定数をインポート
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+from constants import SEVERITY_GROUPS
 
 class RewardDesigner:
     """
@@ -35,9 +41,6 @@ class RewardDesigner:
         # 連続報酬を使う場合のみパラメータ設定
         if self.use_continuous:
             self._setup_continuous_params()
-        
-        # 統一された傷病度定数をインポート
-        from constants import SEVERITY_GROUPS
         
         # 初期化メッセージは1回だけ（verboseフラグで制御）
         if config.get('verbose', False):

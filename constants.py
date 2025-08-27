@@ -35,8 +35,7 @@ SEVERITY_GROUPS = {
     'severe_conditions': ['重症', '重篤', '死亡'],  # 重症系
     'mild_conditions': ['軽症', '中等症'],          # 軽症系
     'critical_conditions': ['重篤'],                # 最重症
-    'moderate_conditions': ['中等症'],              # 中等症
-    'mild_conditions': ['軽症']                     # 軽症
+    'moderate_conditions': ['中等症']               # 中等症
 }
 
 # ================================================================

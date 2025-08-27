@@ -7,6 +7,12 @@ import numpy as np
 import h3
 from typing import Dict, List, Optional
 import torch
+import sys
+import os
+
+# 統一された傷病度定数をインポート
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+from constants import SEVERITY_INDICES
 
 class StateEncoder:
     """
@@ -22,9 +28,6 @@ class StateEncoder:
         self.incident_features = 10  # 位置、傷病度など
         self.temporal_features = 8  # 時間関連
         self.spatial_features = 20  # 空間統計
-        
-        # 統一された傷病度定数をインポート
-        from constants import SEVERITY_INDICES
         
         # 傷病度のone-hotエンコーディング用
         self.severity_indices = SEVERITY_INDICES

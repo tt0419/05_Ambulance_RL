@@ -12,8 +12,11 @@ import time
 from datetime import datetime
 from tqdm import tqdm
 import wandb
+import sys
+import os
 
 # 統一された傷病度定数をインポート
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from constants import get_severity_english
 
 from ..environment.ems_environment import EMSEnvironment
@@ -176,10 +179,26 @@ class PPOTrainer:
         
         # 学習の進行に応じて教師の使用率を減らす
         if use_teacher and training:
-            # エピソード数に応じて教師確率を減衰
-            current_episode = len(self.episode_rewards)
-            # 最初は80%、1000エピソードで20%まで減衰
-            teacher_prob = max(0.2, 0.8 - (current_episode / 1000) * 0.6)
+            # ★★★【修正点②】★★★
+            # configファイルから教師あり学習の設定を読み込む
+            teacher_config = self.config.get('teacher', {})
+            if teacher_config.get('enabled', False):
+                current_episode = len(self.episode_rewards)
+                
+                # 設定値の取得 (デフォルト値も設定)
+                initial_prob = teacher_config.get('initial_prob', 0.8)
+                final_prob = teacher_config.get('final_prob', 0.2)
+                decay_episodes = teacher_config.get('decay_episodes', 1000)
+                
+                if current_episode >= decay_episodes:
+                    teacher_prob = final_prob
+                else:
+                    # 線形に減衰
+                    decay_rate = (initial_prob - final_prob) / decay_episodes
+                    teacher_prob = initial_prob - decay_rate * current_episode
+            else:
+                teacher_prob = 0.0
+            # ★★★【修正ここまで】★★★
         else:
             teacher_prob = 0.0
         
