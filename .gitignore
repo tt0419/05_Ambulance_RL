@@ -42,3 +42,8 @@ old/
 
 # check point
 checkpoints/
+
+# WandB files (large files that exceed GitHub limits)
+wandb/
+*.wandb
+wandb-*
