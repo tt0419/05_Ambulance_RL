@@ -195,7 +195,25 @@ class EMSEnvironment:
         
         # 状態・行動空間の次元
         self.action_dim = len(self.ambulance_data)  # 実際の救急車数
-        self.state_dim = self._calculate_state_dim()  # 救急車数に基づいて計算
+        
+        # ★★★【修正提案】★★★
+        # StateEncoderの初期化をここで行い、インスタンスをクラス変数として保持する
+        response_matrix = self.travel_time_matrices.get('response', None)
+        if response_matrix is None:
+            print("警告: responseフェーズの移動時間行列が見つかりません。")
+
+        # StateEncoderを初期化して、self.state_encoderとして保持
+        from .state_encoder import StateEncoder
+        self.state_encoder = StateEncoder(
+            config=self.config,
+            max_ambulances=self.action_dim,
+            travel_time_matrix=response_matrix,
+            grid_mapping=self.grid_mapping
+        )
+        
+        # StateEncoderインスタンスから状態次元を取得する
+        self.state_dim = self.state_encoder.state_dim
+        # ★★★【修正ここまで】★★★
         
         print(f"状態空間次元: {self.state_dim}")
         print(f"行動空間次元: {self.action_dim}")
@@ -327,24 +345,21 @@ class EMSEnvironment:
         distance_matrix_path = self.base_dir / "processed/travel_distance_matrix_res9.npy"
         self.travel_distance_matrix = np.load(distance_matrix_path)
         
-    def _calculate_state_dim(self):
-        """状態空間の次元を計算（動的）"""
-        # 実際の救急車数 × 4特徴（方面によって救急車数は異なる）
-        actual_ambulance_count = self.action_dim if hasattr(self, 'action_dim') else len(self.ambulance_data)
-        ambulance_features = actual_ambulance_count * 4
-        
-        # 事案情報
-        incident_features = 10
-        
-        # 時間情報
-        temporal_features = 8
-        
-        # 空間情報
-        spatial_features = 20
-        
-        total = ambulance_features + incident_features + temporal_features + spatial_features
-        print(f"  状態空間次元: 救急車{actual_ambulance_count}台 × 4 + その他{incident_features + temporal_features + spatial_features} = {total}")
-        return total
+    def _calculate_state_dim(self) -> int:
+        """状態空間の次元を計算（フォールバック用）"""
+        # StateEncoderが既に次元を計算しているので、そこから取得するだけ
+        if hasattr(self, 'state_encoder'):
+            return self.state_encoder.state_dim
+        else:
+            # 古いフォールバックロジック
+            actual_ambulance_count = self.action_dim if hasattr(self, 'action_dim') else len(self.ambulance_data)
+            ambulance_features = actual_ambulance_count * 4
+            incident_features = 10
+            temporal_features = 8
+            spatial_features = 20
+            total = ambulance_features + incident_features + temporal_features + spatial_features
+            print(f"  状態空間次元: 救急車{actual_ambulance_count}台 × 4 + その他{incident_features + temporal_features + spatial_features} = {total}")
+            return total
     
     def reset(self, period_index: Optional[int] = None) -> np.ndarray:
         """
@@ -1251,22 +1266,6 @@ class EMSEnvironment:
     
     def _get_observation(self) -> np.ndarray:
         """現在の観測を取得"""
-        # 状態エンコーダを使用
-        from .state_encoder import StateEncoder
-        
-        # configにnetworkセクションがない場合のデフォルト値
-        if 'network' not in self.config:
-            self.config['network'] = {
-                'state_encoder': {
-                    'ambulance_features': 4,
-                    'incident_features': 10,
-                    'spatial_features': 20,
-                    'temporal_features': 8
-                }
-            }
-        
-        encoder = StateEncoder(self.config, max_ambulances=self.action_dim)
-        
         state_dict = {
             'ambulances': self.ambulance_states,
             'pending_call': self.pending_call,
@@ -1274,7 +1273,8 @@ class EMSEnvironment:
             'time_of_day': self._get_time_of_day()
         }
         
-        observation = encoder.encode_state(state_dict, self.grid_mapping)
+        # 初期化時に作成したインスタンスをそのまま使用する
+        observation = self.state_encoder.encode_state(state_dict)
         
         return observation
     

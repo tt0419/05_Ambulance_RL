@@ -18,7 +18,7 @@ inherits: ./config.yaml
 
 experiment:
   name: "ppo_area1_simple_reward_v1"
-  description: "模倣期間は4000エピソード、自律期間は1000エピソード"
+  description: "6分以内に重症系を対応できたら大きくボーナス"
   seed: 2025
   device: cuda
 
@@ -70,7 +70,7 @@ reward:
   time_penalty_per_minute: -0.25  # 1分あたり-0.25のペナルティ (例: 8分で-2.0)
   
   # 2. ポジティブな行動へのボーナス (報酬シェイピング)
-  critical_under_6min_bonus: 2.0  # 重症系を6分以内で対応できたらボーナス
+  critical_under_6min_bonus: 10.0  # 重症系を6分以内で対応できたらボーナス
   imitation_bonus: 0.5            # 教師と同じ行動をしたら小さなボーナス
   
   # 3. 大きな失敗へのペナルティ
