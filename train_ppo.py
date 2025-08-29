@@ -121,6 +121,11 @@ def main():
                        help='使用デバイス (cpu/cuda)')
     parser.add_argument('--debug', action='store_true',
                        help='デバッグモード')
+    # ★★★【修正箇所①】★★★
+    # ベースライン計測モードを起動する引数を追加
+    parser.add_argument('--baseline_mode', type=str, choices=['closest', 'severity_based'], default=None,
+                       help='ベースライン計測モードで実行（例: closest）。PPO学習は行わず、指定した戦略の性能を計測します。')
+    
     args = parser.parse_args()
     
     # 設定ファイルの読み込み
@@ -227,20 +232,26 @@ def main():
             output_dir=output_dir
         )
         
-        # チェックポイントからの再開
-        if args.resume:
-            print(f"\nチェックポイントから再開: {args.resume}")
-            trainer.load_checkpoint(args.resume)
+        # ★★★【修正箇所②】★★★
+        # --baseline_mode 引数に基づいて処理を分岐させる
+        if args.baseline_mode:
+            # ベースライン計測モードの場合
+            print(f"\n【ベースライン計測モード: {args.baseline_mode}】")
+            trainer.run_baseline_evaluation(strategy=args.baseline_mode)
+        else:
+            # 通常のPPO学習モードの場合
+            if args.resume:
+                print(f"\nチェックポイントから再開: {args.resume}")
+                trainer.load_checkpoint(args.resume)
+            
+            print("\n" + "=" * 70)
+            print("PPO学習開始")
+            print("=" * 70)
+            
+            trainer.train()
         
-        # 学習開始
         print("\n" + "=" * 70)
-        print("学習開始")
-        print("=" * 70)
-        
-        trainer.train()
-        
-        print("\n" + "=" * 70)
-        print("学習完了！")
+        print("処理完了！")
         print(f"結果保存先: {output_dir}")
         print("=" * 70)
         

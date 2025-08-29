@@ -18,7 +18,7 @@ inherits: ./config.yaml
 
 experiment:
   name: "ppo_area1_simple_reward_v1"
-  description: "【改善版】単純化した報酬と徹底した模倣学習による段階的改善アプローチ"
+  description: "模倣期間は4000エピソード、自律期間は1000エピソード"
   seed: 2025
   device: cuda
 
@@ -43,7 +43,7 @@ data:
 # PPOハイパーパラメータ (安定性重視で再調整)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 500
+  n_episodes: 5000
   batch_size: 256
   
   # 学習率: Criticを少し高めに設定し、価値関数の学習を促進
@@ -89,9 +89,9 @@ teacher:
   strategy: closest  # 教師は直近隊戦略
   
   # カリキュラム: 最初はほぼ完全に模倣し、ゆっくり自律させる
-  initial_prob: 1.0   # ほぼ100%模倣からスタート
-  final_prob: 1.0     # 最終的にも30%は教師を参考にする
-  decay_episodes: 500 # 2500エピソードかけてゆっくり減衰
+  initial_prob: 0.99   # ほぼ100%模倣からスタート
+  final_prob: 0.30     # 最終的にも30%は教師を参考にする
+  decay_episodes: 4000 # 2500エピソードかけてゆっくり減衰
 
   # 【単純化】傷病度別の教師確率を廃止し、単一の減衰スケジュールに統一
 

@@ -519,3 +519,66 @@ class PPOTrainer:
         """チェックポイントから再開"""
         self.agent.load(checkpoint_path)
         print(f"チェックポイント読み込み完了: {checkpoint_path}")
+    
+    # ★★★【修正箇所③】★★★
+    # ベースライン計測用の新しいメソッドを丸ごと追加
+    def run_baseline_evaluation(self, strategy: str, num_episodes: int = 20):
+        """
+        指定されたベースライン戦略を実行し、平均報酬を計測する。
+        PPOエージェントは使用しない。
+        """
+        print(f"\n'{strategy}' 戦略の性能を {num_episodes} エピソードで計測します...")
+        
+        baseline_rewards = []
+        all_stats = []
+
+        for i in tqdm(range(1, num_episodes + 1), desc="ベースライン評価中"):
+            self.env.reset()
+            episode_reward = 0.0
+            
+            while True:
+                # PPOエージェントの代わりに、環境に最適行動（＝ベースライン行動）を問い合わせる
+                if strategy == 'closest':
+                    # get_optimal_action が直近隊戦略に相当
+                    action = self.env.get_optimal_action()
+                else:
+                    # 将来的に他の戦略も追加可能
+                    action = self.env.get_optimal_action()
+
+                # 利用可能な救急車がいない場合はダミーの行動（マスクで無効化される）
+                if action is None:
+                    action = 0 
+
+                step_result = self.env.step(action)
+                
+                # step_resultがNoneでないことを確認
+                if step_result is None:
+                    print("警告: env.step()がNoneを返しました。ループを終了します。")
+                    break
+                    
+                episode_reward += step_result.reward
+                
+                if step_result.done:
+                    break
+            
+            baseline_rewards.append(episode_reward)
+            all_stats.append(self.env.get_episode_statistics())
+
+        mean_reward = np.mean(baseline_rewards)
+        std_reward = np.std(baseline_rewards)
+        
+        # 詳細な性能指標も計算
+        mean_rt = np.mean([s['summary']['mean_response_time'] for s in all_stats if 'summary' in s])
+        mean_6min_rate = np.mean([s['summary']['6min_achievement_rate'] for s in all_stats if 'summary' in s]) * 100
+        mean_13min_rate = np.mean([s['summary']['13min_achievement_rate'] for s in all_stats if 'summary' in s]) * 100
+
+        print("\n" + "=" * 60)
+        print("ベースライン計測完了")
+        print(f"  戦略: {strategy}")
+        print(f"  平均報酬: {mean_reward:.2f} ± {std_reward:.2f}")
+        print("-" * 20)
+        print(f"  平均応答時間: {mean_rt:.2f} 分")
+        print(f"  平均6分達成率: {mean_6min_rate:.2f} %")
+        print(f"  平均13分達成率: {mean_13min_rate:.2f} %")
+        print("=" * 60)
+        print("\nこの平均報酬が、PPOエージェントが目指すべき真の目標スコアです。")
