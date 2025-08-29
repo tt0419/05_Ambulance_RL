@@ -160,13 +160,14 @@ class PPOTrainer:
         self.agent.save(self.output_dir / "final_model.pth")
         self._save_training_stats()
         
-    def _run_episode(self, training: bool = True, use_teacher: bool = True) -> Tuple[float, int, Dict]:
+    def _run_episode(self, training: bool = True, use_teacher: bool = True, force_teacher: bool = False) -> Tuple[float, int, Dict]:
         """
         1エピソードを実行（教師あり学習オプション付き）
         
         Args:
             training: 学習モードフラグ
             use_teacher: 教師あり学習を使用するか
+            force_teacher: 強制的に教師を使用するか
             
         Returns:
             episode_reward: エピソード報酬
@@ -177,8 +178,11 @@ class PPOTrainer:
         episode_reward = 0.0
         episode_length = 0
         
-        # 学習の進行に応じて教師の使用率を減らす
-        if use_teacher and training:
+        # ★★★【修正箇所①】★★★
+        # force_teacherフラグを考慮するように条件を変更
+        use_teacher_in_this_step = (use_teacher and training) or force_teacher
+
+        if use_teacher_in_this_step:
             # ★★★【修正点②】★★★
             # configファイルから教師あり学習の設定を読み込む
             teacher_config = self.config.get('teacher', {})
@@ -206,7 +210,7 @@ class PPOTrainer:
             # 行動選択
             action_mask = self.env.get_action_mask()
             
-            if training and use_teacher:
+            if use_teacher_in_this_step:
                 # 最適行動を取得
                 optimal_action = self.env.get_optimal_action()
                 
@@ -276,7 +280,15 @@ class PPOTrainer:
         }
         
         for _ in range(self.n_eval_episodes):
-            episode_reward, _, episode_stats = self._run_episode(training=False)
+            # ★★★【修正箇所②】★★★
+            # 今回の「完全模倣実験」では、評価時も教師を強制的に有効にする
+            # teacher_probが1.0に設定されていれば、常に最適行動を取るはず
+            force_teacher_for_eval = self.config.get('teacher', {}).get('final_prob', 0) == 1.0
+            
+            episode_reward, _, episode_stats = self._run_episode(
+                training=False, 
+                force_teacher=force_teacher_for_eval
+            )
             eval_rewards.append(episode_reward)
             
             # 統計集計

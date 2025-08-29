@@ -20,6 +20,10 @@ import os
 # プロジェクトルートをパスに追加
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+# 統一された傷病度定数をインポート
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+from constants import SEVERITY_GROUPS, is_severe_condition
+
 from validation_simulation import (
     ValidationSimulator,
     EventType,
@@ -130,8 +134,7 @@ class EMSEnvironment:
         self.data_cache.load_data()
         print("データキャッシュ準備完了")
         
-        # 統一された傷病度定数をインポート
-        from constants import SEVERITY_GROUPS, is_severe_condition
+
         
         # 傷病度設定の初期化
         self._setup_severity_mapping()
