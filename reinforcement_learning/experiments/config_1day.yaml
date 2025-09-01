@@ -4,7 +4,18 @@ experiment:
   seed: 42
   device: "cuda"
 
+# データパス設定（PPO戦略の初期化に必要）
+data_paths:
+  grid_mapping: "data/tokyo/processed/grid_mapping_res9.json"
+  travel_time_matrix: "data/tokyo/calibration2/linear_calibrated_response.npy"
+
 data:
+  # ★★★ 全地域用の次元数設定（後方拡張性確保）★★★
+  area_restriction:
+    enabled: false  # 全地域使用
+    num_ambulances_in_area: 192  # 全地域の救急車数
+    state_dim: 998  # 全地域の状態次元数（192*5+10+8+20=998）
+    action_dim: 192  # 全地域の行動次元数
   train_periods:
     - start_date: "20230401"
       end_date: "20230401"

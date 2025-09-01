@@ -7,6 +7,14 @@ baseline_comparison.py
 2. 戦略設定の変更: strategy_configs 辞書を編集
 3. 戦略ラベルの変更: strategy_labels 辞書を編集
 4. 色の変更: strategy_colors 辞書を編集
+
+【PPO戦略の使用方法】
+1. PPO戦略を含む比較実験を実行する場合:
+   - EXPERIMENT_CONFIG['strategies']で'ppo_agent'のコメントアウトを外す
+   - または、main_with_ppo()関数を呼び出す
+2. PPO戦略の設定:
+   - strategy_configs['ppo_agent']でmodel_pathとconfig_pathを指定
+   - 学習済みモデル(.pth)と設定ファイル(.yaml)のパスを正しく設定
 """
 
 import os
@@ -41,22 +49,25 @@ from constants import SEVERITY_GROUPS
 # ============================================================
 EXPERIMENT_CONFIG = {
     # 比較する戦略のリスト（ここで戦略を追加・削除）
-    'strategies': ['closest', 'severity_based'
-                   #, 'advanced_severity'
+    'strategies': [#'closest', 'severity_based',
+                   # 'advanced_severity',
+                   'ppo_agent'  # ★★★ PPO戦略をコメントアウトで追加 ★★★
                    ],
     
     # 各戦略の日本語表示名
     'strategy_labels': {
         'closest': '直近隊運用',
         'severity_based': '傷病度考慮運用',
-        'advanced_severity': '高度傷病度考慮運用'
+        'advanced_severity': '高度傷病度考慮運用',
+        'ppo_agent': 'PPOエージェント運用'  # ★★★ PPO戦略のラベルを追加 ★★★
     },
     
     # 各戦略の色設定
     'strategy_colors': {
         'closest': '#3498db',        # 青
         'severity_based': '#e74c3c',  # 赤
-        'advanced_severity': '#2ecc71' # 緑
+        'advanced_severity': '#2ecc71', # 緑
+        'ppo_agent': '#9b59b6'       # 紫 ★★★ PPO戦略の色を追加 ★★★
     },
     
     # 各戦略の設定（STRATEGY_CONFIGSから選択またはカスタム設定）
@@ -73,7 +84,18 @@ EXPERIMENT_CONFIG = {
             'mild_time_limit_sec': 1080,         # 軽症の許容時間を18分(1080秒)に
             'moderate_time_limit_sec': 900       # 中等症の許容時間を15分(900秒)に
         },
-        'advanced_severity': STRATEGY_CONFIGS['aggressive']  # 推奨設定
+        'advanced_severity': STRATEGY_CONFIGS['aggressive'],  # 推奨設定
+        'ppo_agent': {  # ★★★ PPO戦略の設定を追加 ★★★
+            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20250829_154139/final_model.pth',  # 学習済みモデルのパス
+            'config_path': 'reinforcement_learning/experiments/config_area1.yaml',  # 第1方面限定の学習設定（学習時と同じ）
+            # ★★★ 地域制限の設定を明示的に指定 ★★★
+            'area_restriction': {
+                'enabled': True,
+                'area_name': '第一方面',
+                'section_code': 1,
+                'districts': ['千代田区', '中央区', '港区']
+            }
+        }
     }
 }
 
@@ -655,3 +677,40 @@ if __name__ == "__main__":
     )
     
     print("\n実験完了！")
+
+# ★★★【追加】PPO戦略の比較実験を実行する関数 ★★★
+def main_with_ppo():
+    """
+    PPO戦略を含む比較実験を実行する関数
+    使用方法: baseline_comparison.pyのEXPERIMENT_CONFIGで'ppo_agent'のコメントアウトを外してから実行
+    """
+    print("PPO戦略を含むベースライン戦略の性能評価を開始します。")
+    
+    # 実験パラメータ
+    EXPERIMENT_PARAMS = {
+        'target_date': '20240101',  # シミュレーション対象日
+        'duration_hours': 24,       # シミュレーション期間（時間）
+        'num_runs': 3,              # 各戦略の実行回数（PPOは重いので少なめ）
+        'output_base_dir': 'data/tokyo/experiments',
+        'wandb_project': 'ems-dispatch-optimization-with-ppo'
+    }
+    
+    # PPO戦略を有効にするために、一時的に戦略リストを変更
+    original_strategies = EXPERIMENT_CONFIG['strategies'].copy()
+    EXPERIMENT_CONFIG['strategies'] = ['closest', 'severity_based', 'ppo_agent']
+    
+    try:
+        # 実験実行
+        results = run_comparison_experiment(
+            target_date=EXPERIMENT_PARAMS['target_date'],
+            duration_hours=EXPERIMENT_PARAMS['duration_hours'],
+            num_runs=EXPERIMENT_PARAMS['num_runs'],
+            output_base_dir=EXPERIMENT_PARAMS['output_base_dir'],
+            wandb_project=EXPERIMENT_PARAMS['wandb_project']
+        )
+        
+        print("\nPPO戦略を含む実験完了！")
+        
+    finally:
+        # 元の設定に戻す
+        EXPERIMENT_CONFIG['strategies'] = original_strategies

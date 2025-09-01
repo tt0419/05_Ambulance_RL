@@ -15,6 +15,12 @@ inherits: ./config.yaml
 # ===================================================================
 
 
+# データパス設定（PPO戦略の初期化に必要）
+data_paths:
+  grid_mapping: "data/tokyo/processed/grid_mapping_res9.json"
+  travel_time_matrix: "data/tokyo/calibration2/linear_calibrated_response.npy"
+
+
 
 experiment:
   name: "ppo_area1_simple_reward_v1"
@@ -31,6 +37,10 @@ data:
     area_name: "第一方面"
     section_code: 1
     districts: ["千代田区", "中央区", "港区"]
+    # ★★★ 次元数を明示的に定義（学習時と評価時の一貫性確保）★★★
+    num_ambulances_in_area: 16  # 第1方面の救急車数
+    state_dim: 118  # 学習時の状態次元数（16*5+10+8+20=118）
+    action_dim: 16  # 学習時の行動次元数
   episode_duration_hours: 24
   train_periods:
     - start_date: "20230401"

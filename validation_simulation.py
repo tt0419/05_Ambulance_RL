@@ -42,6 +42,7 @@ from dispatch_strategies import (
     AmbulanceInfo,
     DispatchContext,
     DispatchPriority,
+    PPOStrategy,  # ★★★ PPO戦略を追加 ★★★
     STRATEGY_CONFIGS
 )
 
@@ -1121,6 +1122,11 @@ class ValidationSimulator:
         self.dispatch_context.hour_of_day = int((self.current_time / 3600) % 24)
         self.dispatch_context.total_ambulances = len(self.ambulances)
         self.dispatch_context.available_ambulances = len(available_ambulances)
+        
+        # ★★★ PPO戦略用：全救急車の状態情報を設定 ★★★
+        self.dispatch_context.all_ambulances = {}
+        for amb_id, ambulance in self.ambulances.items():
+            self.dispatch_context.all_ambulances[amb_id] = ambulance
         
         # 戦略を使用して救急車を選択
         selected_info = self.dispatch_strategy.select_ambulance(
