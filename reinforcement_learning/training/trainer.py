@@ -160,77 +160,66 @@ class PPOTrainer:
         self.agent.save(self.output_dir / "final_model.pth")
         self._save_training_stats()
         
-    def _run_episode(self, training: bool = True, use_teacher: bool = True, force_teacher: bool = False) -> Tuple[float, int, Dict]:
-        """
-        1エピソードを実行（教師あり学習オプション付き）
-        
-        Args:
-            training: 学習モードフラグ
-            use_teacher: 教師あり学習を使用するか
-            force_teacher: 強制的に教師を使用するか
-            
-        Returns:
-            episode_reward: エピソード報酬
-            episode_length: エピソード長
-            episode_stats: エピソード統計
-        """
+    def _run_episode(self, training: bool = True, force_teacher: bool = False) -> Tuple[float, int, Dict]:
+        """エピソードを実行"""
         state = self.env.reset()
         episode_reward = 0.0
         episode_length = 0
         
-        # ★★★【修正箇所①】★★★
-        # force_teacherフラグを考慮するように条件を変更
-        use_teacher_in_this_step = (use_teacher and training) or force_teacher
-
-        if use_teacher_in_this_step:
-            # ★★★【修正点②】★★★
-            # configファイルから教師あり学習の設定を読み込む
-            teacher_config = self.config.get('teacher', {})
-            if teacher_config.get('enabled', False):
-                current_episode = len(self.episode_rewards)
-                
-                # 設定値の取得 (デフォルト値も設定)
-                initial_prob = teacher_config.get('initial_prob', 0.8)
-                final_prob = teacher_config.get('final_prob', 0.2)
-                decay_episodes = teacher_config.get('decay_episodes', 1000)
-                
-                if current_episode >= decay_episodes:
-                    teacher_prob = final_prob
-                else:
-                    # 線形に減衰
-                    decay_rate = (initial_prob - final_prob) / decay_episodes
-                    teacher_prob = initial_prob - decay_rate * current_episode
+        # 教師確率の計算（設定から適切に読み込む）
+        if force_teacher:
+            teacher_prob = 1.0
+        elif training and self.config.get('teacher', {}).get('enabled', False):
+            teacher_config = self.config['teacher']
+            initial_prob = teacher_config.get('initial_prob', 0.0)
+            final_prob = teacher_config.get('final_prob', 0.0)
+            decay_episodes = teacher_config.get('decay_episodes', 1000)
+            
+            # エピソード数に基づく減衰
+            current_episode = len(self.episode_rewards)
+            if current_episode < decay_episodes:
+                teacher_prob = initial_prob - (initial_prob - final_prob) * (current_episode / decay_episodes)
             else:
-                teacher_prob = 0.0
-            # ★★★【修正ここまで】★★★
+                teacher_prob = final_prob
         else:
             teacher_prob = 0.0
         
         while True:
             # 行動選択
             action_mask = self.env.get_action_mask()
+            optimal_action = self.env.get_optimal_action() if teacher_prob > 0 else None
             
-            if use_teacher_in_this_step:
-                # 最適行動を取得
-                optimal_action = self.env.get_optimal_action()
-                
-                # 教師あり混合選択
-                action, log_prob, value = self.agent.select_action_with_teacher(
-                    state, 
-                    action_mask,
-                    optimal_action,
-                    teacher_prob,
-                    deterministic=not training
-                )
+            # 教師あり学習の判定
+            use_teacher = optimal_action is not None and np.random.random() < teacher_prob
+            
+            if training:
+                if use_teacher:
+                    # 教師の行動を使用
+                    action = optimal_action
+                    # PPOエージェントで確率を計算
+                    state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.agent.device)
+                    with torch.no_grad():
+                        action_probs = self.agent.actor(state_tensor)
+                        value = self.agent.critic(state_tensor).item()
+                        log_prob = torch.log(action_probs[0, action]).item()
+                    
+                    # 教師との一致を記録
+                    matched_teacher = True
+                else:
+                    # PPOエージェントの選択
+                    action, log_prob, value = self.agent.select_action(
+                        state, action_mask, deterministic=False
+                    )
+                    matched_teacher = (action == optimal_action) if optimal_action is not None else False
             else:
-                # 通常のPPO選択
+                # 評価時
                 action, log_prob, value = self.agent.select_action(
-                    state, 
-                    action_mask,
-                    deterministic=not training
+                    state, action_mask, deterministic=True
                 )
+                matched_teacher = False
             
-            # 環境ステップ
+            # 環境ステップ（教師一致情報を渡す）
+            self.env.current_matched_teacher = matched_teacher  # 一時的に保存
             step_result = self.env.step(action)
             next_state = step_result.observation
             reward = step_result.reward

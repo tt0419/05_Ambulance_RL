@@ -193,6 +193,9 @@ class EMSEnvironment:
         # デバッグ用のverbose_logging属性を初期化
         self.verbose_logging = False
         
+        # 教師一致情報の初期化
+        self.current_matched_teacher = False
+        
         # 状態・行動空間の次元
         self.action_dim = len(self.ambulance_data)  # 実際の救急車数
         
@@ -740,7 +743,8 @@ class EMSEnvironment:
             'severity': self.pending_call['severity'],
             'response_time': travel_time,
             'response_time_minutes': travel_time / 60.0,
-            'estimated_completion_time': completion_time
+            'estimated_completion_time': completion_time,
+            'matched_teacher': self.current_matched_teacher
         }
         
         return result
@@ -896,18 +900,35 @@ class EMSEnvironment:
 
     
     def _calculate_reward(self, dispatch_result: Dict) -> float:
-        """報酬を計算"""
+        """報酬を計算（RewardDesignerに完全委譲）"""
         if not dispatch_result['success']:
-            return -1.0  # 配車失敗ペナルティ
+            # 失敗の種類に応じてペナルティを取得
+            if dispatch_result.get('reason') == 'no_pending_call':
+                return 0.0  # 事案なしは報酬なし
+            elif dispatch_result.get('reason') == 'ambulance_busy':
+                return self.reward_designer.get_failure_penalty('no_available')
+            else:
+                return self.reward_designer.get_failure_penalty('dispatch')
         
+        # 成功時の報酬計算
         severity = dispatch_result['severity']
         response_time = dispatch_result['response_time']
         
-        # 既に初期化済みのreward_designerを使用
-        reward = self.reward_designer.calculate_reward(
+        # カバレッジ影響の計算（簡易版）
+        coverage_impact = self._calculate_coverage_impact(dispatch_result.get('ambulance_id'))
+        
+        # 追加情報（教師との一致など）
+        additional_info = {
+            'matched_teacher': dispatch_result.get('matched_teacher', False),
+            'distance_rank': dispatch_result.get('distance_rank', None)
+        }
+        
+        # RewardDesignerで報酬計算
+        reward = self.reward_designer.calculate_step_reward(
             severity=severity,
             response_time=response_time,
-            coverage_impact=0.0
+            coverage_impact=coverage_impact,
+            additional_info=additional_info
         )
         
         return reward
@@ -1031,7 +1052,7 @@ class EMSEnvironment:
             return 5.0  # デフォルト5km
     
     def get_episode_statistics(self) -> Dict:
-        """エピソード終了時の詳細統計を取得"""
+        """エピソード統計を取得（RewardDesignerと連携）"""
         stats = self.episode_stats.copy()
         
         # 集計値の計算
@@ -1067,6 +1088,10 @@ class EMSEnvironment:
             stats['efficiency_metrics']['distance_per_call'] = (
                 stats['efficiency_metrics']['total_distance'] / stats['total_dispatches']
             )
+        
+        # エピソード報酬を計算
+        if self.reward_designer:
+            stats['episode_reward'] = self.reward_designer.calculate_episode_reward(stats)
         
         return stats
     
@@ -1165,11 +1190,12 @@ class EMSEnvironment:
         # 重症度別統計の更新
         self._update_unhandled_statistics(unhandled_call)
         
-        # 重症度別ペナルティ（研究の核心部分）
-        penalty = self._calculate_realistic_penalty(call['severity'], wait_time, response_type)
-        if not hasattr(self, 'unhandled_penalty_total'):
-            self.unhandled_penalty_total = 0
-        self.unhandled_penalty_total += penalty
+        # 重症度別ペナルティ（RewardDesignerに委譲）
+        if self.reward_designer:
+            penalty = self.reward_designer.calculate_unhandled_penalty(call['severity'], wait_time, response_type)
+            if not hasattr(self, 'unhandled_penalty_total'):
+                self.unhandled_penalty_total = 0
+            self.unhandled_penalty_total += penalty
     
     def _update_unhandled_statistics(self, unhandled_call: Dict):
         """対応不能事案の詳細統計更新"""
@@ -1196,56 +1222,37 @@ class EMSEnvironment:
         self.episode_stats['unhandled_calls'] = getattr(self.episode_stats, 'unhandled_calls', 0) + 1
         self.episode_stats['total_support_time'] = getattr(self.episode_stats, 'total_support_time', 0) + unhandled_call.get('total_time', 0)
     
-    def _calculate_realistic_penalty(self, severity: str, wait_time: int, response_type: str) -> float:
-        """現実的なペナルティ計算（研究の核心）"""
+    def _calculate_coverage_impact(self, ambulance_id: Optional[int]) -> float:
+        """
+        カバレッジへの影響を簡易計算
         
-        # 基本ペナルティ（重症度に応じて）
-        if severity in ['重篤', '重症']:
-            base_penalty = -150.0  # 重症対応不能は深刻
-        elif severity == '中等症':
-            base_penalty = -75.0   # 中等症対応不能も問題
-        else:  # 軽症
-            base_penalty = -25.0   # 軽症対応不能は相対的に軽微
+        Returns:
+            0.0-1.0の範囲（0=影響なし、1=大きな影響）
+        """
+        if ambulance_id is None:
+            return 0.0
         
-        # 対応タイプ別の調整
-        if response_type == 'transport_cancel':
-            # 搬送見送りは最も軽いペナルティ
-            type_multiplier = 0.3
-        elif response_type == 'emergency_support':
-            # 緊急応援は迅速対応なので中程度のペナルティ
-            type_multiplier = 0.6
-        elif response_type == 'standard_support':
-            # 標準応援は通常のペナルティ
-            type_multiplier = 0.8
-        elif response_type == 'delayed_support':
-            # 遅延応援は重いペナルティ
-            type_multiplier = 1.2
+        # 利用可能な救急車の割合から簡易計算
+        available_count = sum(1 for amb in self.ambulance_states.values() 
+                             if amb['status'] == 'available')
+        total_count = len(self.ambulance_states)
+        
+        if total_count == 0:
+            return 0.0
+        
+        utilization_rate = 1.0 - (available_count / total_count)
+        
+        # 稼働率が高いほど、1台の出動の影響が大きい
+        if utilization_rate > 0.8:
+            return 0.8
+        elif utilization_rate > 0.6:
+            return 0.5
+        elif utilization_rate > 0.4:
+            return 0.3
         else:
-            type_multiplier = 1.0
-        
-        # 待機時間による追加ペナルティ
-        time_penalty = -min(wait_time * 2, 120)  # 最大120分ペナルティ
-        
-        total_penalty = (base_penalty * type_multiplier) + time_penalty
-        
-        return total_penalty
+            return 0.1
     
-    def _calculate_unhandled_penalty(self, severity: str, wait_time: int) -> float:
-        """対応不能事案のペナルティ計算"""
-        base_penalty = -50.0  # 基本ペナルティ
-        
-        # 傷病度による重み付け
-        if severity in ['重篤', '重症']:
-            severity_multiplier = 3.0
-        elif severity == '中等症':
-            severity_multiplier = 2.0
-        else:  # 軽症
-            severity_multiplier = 1.0
-        
-        # 待機時間による追加ペナルティ
-        time_penalty = -min(wait_time, 120) * 0.5  # 最大120分まで
-        
-        return base_penalty * severity_multiplier + time_penalty
+
     
     def _is_episode_done(self) -> bool:
         """エピソード終了判定"""

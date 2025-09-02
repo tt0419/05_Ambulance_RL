@@ -24,7 +24,7 @@ data_paths:
 
 experiment:
   name: "ppo_area1_simple_reward_v1"
-  description: "10000epまで引き延ばし、entropy_coefを0.015に増加"
+  description: "大規模な報酬設定ファイルの改変テスト"
   seed: 2025
   device: cuda
 
@@ -53,7 +53,7 @@ data:
 # PPOハイパーパラメータ (安定性重視で再調整)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 10000
+  n_episodes: 50000
   batch_size: 512
   
   # 学習率: Criticを少し高めに設定し、価値関数の学習を促進
@@ -74,22 +74,39 @@ ppo:
 # 報酬設計 (【最重要】抜本的に単純化)
 # -------------------------------------------------------------------
 reward:
-  # 基本方針: 応答時間(分)に応じたペナルティを主軸とし、報酬のスケールを[-5, +5]程度に正規化
+  # systemセクションは継承（変更なし）
   
-  # 1. 中核となる時間ペナルティ
-  time_penalty_per_minute: -0.25  # 1分あたり-0.25のペナルティ (例: 8分で-2.0)
+  # coreセクションを簡略化モードに変更
+  core:
+    mode: "simple"  # シンプルモードを使用
+    
+    simple_params:
+      # 基本的な時間ペナルティ
+      time_penalty_per_minute: -0.25  # 1分あたりのペナルティ
+      
+      # 達成ボーナス
+      critical_under_6min_bonus: 10.0   # 重症6分以内
+      moderate_under_13min_bonus: 5.0   # 中等症13分以内
+      mild_under_13min_bonus: 2.0       # 軽症13分以内
+      
+      # 閾値超過ペナルティ
+      over_13min_penalty: -2.0          # 13分超過
+      over_20min_penalty: -5.0          # 20分超過
+      
+      # 教師模倣ボーナス（カリキュラム学習用）
+      imitation_bonus: 0.5              # 教師と同じ行動選択時
+    
+    # カバレッジは無効化（シンプル化のため）
+    coverage_impact_weight: 0.0
   
-  # 2. ポジティブな行動へのボーナス (報酬シェイピング)
-  critical_under_6min_bonus: 10.0  # 重症系を6分以内で対応できたらボーナス
-  imitation_bonus: 0.5            # 教師と同じ行動をしたら小さなボーナス
-  
-  # 3. 大きな失敗へのペナルティ
-  over_13min_penalty: -2.0        # 13分を超えたら追加ペナルティ
-
-  # 【廃止した項目】
-  # - 複雑な傷病度別・時間段階別の報酬/ペナルティ
-  # - エピソード数に応じた動的ボーナス
-  # - 直近隊との乖離に対する直接的なペナルティ (imitation_bonusで代替)
+  # episodeセクションも簡略化
+  episode:
+    base_penalty_per_minute: -0.5
+    achievement_bonuses:
+      rate_6min: 20.0        # 簡略化実験では控えめに
+      rate_13min: 10.0
+      critical_6min_rate: 30.0
+    failure_penalty_per_incident: -2.0  # 失敗ペナルティも軽減
 
 # -------------------------------------------------------------------
 # 教師あり学習 (模倣をさらに強化)
@@ -101,7 +118,7 @@ teacher:
   # カリキュラム: 最初はほぼ完全に模倣し、ゆっくり自律させる
   initial_prob: 0.99   # ほぼ100%模倣からスタート
   final_prob: 0.30     # 最終的にも30%は教師を参考にする
-  decay_episodes: 5000 # 2500エピソードかけてゆっくり減衰
+  decay_episodes: 2500 # 2500エピソードかけてゆっくり減衰
 
   # 【単純化】傷病度別の教師確率を廃止し、単一の減衰スケジュールに統一
 
