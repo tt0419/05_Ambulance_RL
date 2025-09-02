@@ -303,7 +303,7 @@ class RewardDesigner:
             bonus_critical = 0.0
         
         # 配車失敗ペナルティ
-        failure_penalty = episode_stats['failed_dispatches'] * -5.0
+        failure_penalty = episode_stats['failed_dispatches'] * -1.0
         
         total_reward = base_reward + bonus_6min + bonus_13min + bonus_critical + failure_penalty
         

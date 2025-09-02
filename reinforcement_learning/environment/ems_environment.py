@@ -898,7 +898,7 @@ class EMSEnvironment:
     def _calculate_reward(self, dispatch_result: Dict) -> float:
         """報酬を計算"""
         if not dispatch_result['success']:
-            return -10.0  # 配車失敗ペナルティ
+            return -1.0  # 配車失敗ペナルティ
         
         severity = dispatch_result['severity']
         response_time = dispatch_result['response_time']

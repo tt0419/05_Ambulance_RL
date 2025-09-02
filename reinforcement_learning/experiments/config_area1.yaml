@@ -24,7 +24,7 @@ data_paths:
 
 experiment:
   name: "ppo_area1_simple_reward_v1"
-  description: "6分以内に重症系を対応できたら大きくボーナス"
+  description: "10000epまで引き延ばし、entropy_coefを0.015に増加"
   seed: 2025
   device: cuda
 
@@ -43,22 +43,22 @@ data:
     action_dim: 16  # 学習時の行動次元数
   episode_duration_hours: 24
   train_periods:
-    - start_date: "20230401"
-      end_date: "20230415"
+    - start_date: "20230410"
+      end_date: "20230414"
   eval_periods:
-    - start_date: "20240401"
-      end_date: "20240415"
+    - start_date: "20240408"
+      end_date: "20240412"
 
 # -------------------------------------------------------------------
 # PPOハイパーパラメータ (安定性重視で再調整)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 5000
-  batch_size: 256
+  n_episodes: 10000
+  batch_size: 512
   
   # 学習率: Criticを少し高めに設定し、価値関数の学習を促進
   learning_rate:
-    actor: 0.00003  # 3e-5: 低めに維持
+    actor: 0.00005  # 3e-5: 低めに維持
     critic: 0.0001 # 1e-4: Actorより少し高く設定
     scheduler: constant
   
@@ -67,7 +67,7 @@ ppo:
   clip_epsilon: 0.1     # 0.05から少し広げ、更新の停滞を防ぐ
   gamma: 0.99
   gae_lambda: 0.95
-  entropy_coef: 0.01    # 探索の機会をわずかに増やす
+  entropy_coef: 0.015    # 探索の機会をわずかに増やす
   max_grad_norm: 0.5    # 勾配クリッピングを少し緩和
 
 # -------------------------------------------------------------------
@@ -101,7 +101,7 @@ teacher:
   # カリキュラム: 最初はほぼ完全に模倣し、ゆっくり自律させる
   initial_prob: 0.99   # ほぼ100%模倣からスタート
   final_prob: 0.30     # 最終的にも30%は教師を参考にする
-  decay_episodes: 4000 # 2500エピソードかけてゆっくり減衰
+  decay_episodes: 5000 # 2500エピソードかけてゆっくり減衰
 
   # 【単純化】傷病度別の教師確率を廃止し、単一の減衰スケジュールに統一
 
