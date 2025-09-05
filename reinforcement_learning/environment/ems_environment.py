@@ -295,9 +295,24 @@ class EMSEnvironment:
         area_restriction = self.config.get('data', {}).get('area_restriction', {})
         if area_restriction.get('enabled', False):
             section_code = area_restriction.get('section_code')
-            area_name = area_restriction.get('area_name', f'第{section_code}方面')
+            area_name = area_restriction.get('area_name', '指定エリア')
             
-            if section_code in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
+            # section_codeがnullまたはNoneの場合は全方面を使用（東京23区全域など）
+            if section_code is None or section_code == 'null':
+                print(f"  {area_name}（全方面）を使用")
+                # 不要な救急隊を除外（救急隊なし、デイタイム）
+                if 'team_name' in ambulance_data_full.columns:
+                    before_team_filter = len(ambulance_data_full)
+                    # '救急隊なし'と'デイタイム'を含む隊を除外
+                    team_mask = (
+                        (ambulance_data_full['team_name'] != '救急隊なし') &
+                        (~ambulance_data_full['team_name'].str.contains('デイタイム', na=False))
+                    )
+                    self.ambulance_data = ambulance_data_full[team_mask].copy()
+                    print(f"  チーム名フィルタ適用: {before_team_filter}台 → {len(self.ambulance_data)}台 (救急隊なし・デイタイム除外)")
+                else:
+                    self.ambulance_data = ambulance_data_full
+            elif section_code in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
                 # 指定方面の救急隊に限定
                 before_filter = len(ambulance_data_full)
                 section_filtered = ambulance_data_full[ambulance_data_full['section'] == section_code].copy()
@@ -319,6 +334,9 @@ class EMSEnvironment:
                 if len(self.ambulance_data) == 0:
                     print(f"  警告: {area_name}の救急車が見つかりません。全体を使用します。")
                     self.ambulance_data = ambulance_data_full
+            else:
+                # その他の場合は全体を使用
+                self.ambulance_data = ambulance_data_full
         else:
             self.ambulance_data = ambulance_data_full
             

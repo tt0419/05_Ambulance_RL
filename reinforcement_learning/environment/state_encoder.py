@@ -234,7 +234,7 @@ class StateEncoder:
         空間的特徴量をエンコード（移動時間行列を使用した改良版）
         実際の道路網での移動時間統計を計算
         """
-        features = np.zeros(self.spatial_features)
+        features = np.zeros(20)  # 元の20次元の特徴量
         
         if incident is None or self.travel_time_matrix is None or grid_mapping is None:
             # 移動時間行列が利用できない場合は従来の方法にフォールバック
@@ -370,7 +370,7 @@ class StateEncoder:
         空間的特徴量をエンコード（フォールバック版）
         移動時間行列が利用できない場合の従来の実装
         """
-        features = np.zeros(self.spatial_features)
+        features = np.zeros(20)  # 元の20次元の特徴量
         
         if incident is None:
             return features

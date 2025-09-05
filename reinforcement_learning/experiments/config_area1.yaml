@@ -53,13 +53,13 @@ data:
 # PPOハイパーパラメータ (安定性重視で再調整)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 2500
+  n_episodes: 50000
   batch_size: 512
   
   # 学習率: Criticを少し高めに設定し、価値関数の学習を促進
   learning_rate:
-    actor: 0.002  # 3e-5: 低めに維持
-    critic: 0.01 # 1e-4: Actorより少し高く設定
+    actor: 0.00005  # 3e-5: 低めに維持
+    critic: 0.0001 # 1e-4: Actorより少し高く設定
     scheduler: constant
   
   # PPOパラメータ: 更新を少しだけ許容
@@ -101,7 +101,7 @@ reward:
   
   # カバレッジ計算用のパラメータ
   coverage_params:
-    time_threshold_seconds: 600  # 10分（秒単位）
+    time_threshold_seconds: 900  # 10分（秒単位）
     drop_penalty_threshold: 0.05 # 5%以上の低下でペナルティ
     drop_penalty_weight: -20.0   # 低下率に乗じるペナルティの重み
 
@@ -124,7 +124,7 @@ teacher:
   # カリキュラム: 最初はほぼ完全に模倣し、ゆっくり自律させる
   initial_prob: 0.99   # ほぼ100%模倣からスタート
   final_prob: 0.30     # 最終的にも30%は教師を参考にする
-  decay_episodes: 1250 # 2500エピソードかけてゆっくり減衰
+  decay_episodes: 2500 # 2500エピソードかけてゆっくり減衰
 
   # 【単純化】傷病度別の教師確率を廃止し、単一の減衰スケジュールに統一
 

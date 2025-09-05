@@ -1,0 +1,184 @@
+# config_tokyo23.yaml
+# 東京23区全域での実験用設定ファイル
+
+# ★★★【修正点①】★★★
+# どの設定ファイルをベースにするかを指定します。
+# これにより、config.yaml の設定を読み込んだ上で、このファイルの内容で上書きします。
+inherits: ./config.yaml
+
+# ===================================================================
+# 東京23区全域用設定ファイル
+# 主な戦略：
+# 1. 【報酬の単純化】: 複雑な報酬体系を廃止し、「応答時間ペナルティ」を基本とするシンプルな構造に変更。
+# 2. 【模倣学習の徹底】: 学習初期はほぼ100%直近隊を模倣し、安定したベースラインを確立する (Behavioral Cloningに近い)。
+# 3. 【段階的な自律化】: カリキュラムを通じて、教師（直近隊）からの独立をゆっくりと促し、重症事案の改善のみを探索させる。
+# 4. 【学習の安定化】: Criticの学習を優先し、ハイパーパラメータを安定志向で再調整。
+# 5. 【スケール拡張】: 救急車台数を192台に拡張し、東京23区全域をカバー。
+# ===================================================================
+
+# データパス設定（PPO戦略の初期化に必要）
+data_paths:
+  grid_mapping: "data/tokyo/processed/grid_mapping_res9.json"
+  travel_time_matrix: "data/tokyo/calibration2/linear_calibrated_response.npy"
+
+experiment:
+  name: "ppo_tokyo23_simple_reward_v1"
+  description: "東京23区全域での救急車配車最適化実験"
+  seed: 2025
+  device: cuda
+
+# -------------------------------------------------------------------
+# データ設定 (東京23区全域に変更)
+# -------------------------------------------------------------------
+data:
+  area_restriction:
+    enabled: true
+    area_name: "東京23区"
+    section_code: null  # 全方面を対象とするためnull
+    districts: [
+      "千代田区", "中央区", "港区", "新宿区", "文京区", "台東区", 
+      "墨田区", "江東区", "品川区", "目黒区", "大田区", "世田谷区", 
+      "渋谷区", "中野区", "杉並区", "豊島区", "北区", "荒川区", 
+      "板橋区", "練馬区", "足立区", "葛飾区", "江戸川区"
+    ]
+    # ★★★ 次元数を明示的に定義（学習時と評価時の一貫性確保）★★★
+    num_ambulances_in_area: 192  # 東京23区の救急車数
+    state_dim: 999  # 学習時の状態次元数（192*5+10+8+21=999）
+    action_dim: 192  # 学習時の行動次元数
+  episode_duration_hours: 24
+  train_periods:
+    - start_date: "20230410"
+      end_date: "20230414"
+  eval_periods:
+    - start_date: "20240408"
+      end_date: "20240412"
+
+# -------------------------------------------------------------------
+# PPOハイパーパラメータ (安定性重視で再調整)
+# -------------------------------------------------------------------
+ppo:
+  n_episodes: 2500
+  batch_size: 1024  # 救急車台数増加に合わせてバッチサイズを拡大
+  
+  # 学習率: Criticを少し高めに設定し、価値関数の学習を促進
+  learning_rate:
+    actor: 0.00002  # 2e-5: 台数増加に合わせて少し下げる
+    critic: 0.00008 # 8e-5: Actorより少し高く設定
+    scheduler: constant
+  
+  # PPOパラメータ: 更新を少しだけ許容
+  n_epochs: 4
+  clip_epsilon: 0.1     # 0.05から少し広げ、更新の停滞を防ぐ
+  gamma: 0.99
+  gae_lambda: 0.95
+  entropy_coef: 0.01    # 台数増加に合わせて探索係数を調整
+  max_grad_norm: 0.5    # 勾配クリッピングを少し緩和
+
+# -------------------------------------------------------------------
+# 報酬設計 (【最重要】抜本的に単純化)
+# -------------------------------------------------------------------
+reward:
+  # systemセクションは継承（変更なし）
+  
+  # coreセクションを簡略化モードに変更
+  core:
+    mode: "simple"  # シンプルモードを使用
+    
+    simple_params:
+      # 基本的な時間ペナルティ
+      time_penalty_per_minute: -0.25  # 1分あたりのペナルティ
+      
+      # 達成ボーナス
+      critical_under_6min_bonus: 20.0   # 重症6分以内
+      moderate_under_13min_bonus: 5.0   # 中等症13分以内
+      mild_under_13min_bonus: 2.0       # 軽症13分以内
+      
+      # 閾値超過ペナルティ
+      over_13min_penalty: -2.0          # 13分超過
+      over_20min_penalty: -5.0          # 20分超過
+      
+      # 教師模倣ボーナス（カリキュラム学習用）
+      imitation_bonus: 0.5              # 教師と同じ行動選択時
+    
+    # カバレッジは無効化（シンプル化のため）
+    coverage_impact_weight: 0.0
+  
+  # カバレッジ計算用のパラメータ
+  coverage_params:
+    time_threshold_seconds: 600  # 10分（秒単位）
+    drop_penalty_threshold: 0.05 # 5%以上の低下でペナルティ
+    drop_penalty_weight: -20.0   # 低下率に乗じるペナルティの重み
+
+  # episodeセクションも簡略化
+  episode:
+    base_penalty_per_minute: -0.5
+    achievement_bonuses:
+      rate_6min: 20.0        # 簡略化実験では控えめに
+      rate_13min: 10.0
+      critical_6min_rate: 30.0
+    failure_penalty_per_incident: -1.0  # 失敗ペナルティも軽減
+
+# -------------------------------------------------------------------
+# 教師あり学習 (模倣をさらに強化)
+# -------------------------------------------------------------------
+teacher:
+  enabled: true
+  strategy: closest  # 教師は直近隊戦略
+  
+  # カリキュラム: 最初はほぼ完全に模倣し、ゆっくり自律させる
+  initial_prob: 0.99   # ほぼ100%模倣からスタート
+  final_prob: 0.30     # 最終的にも30%は教師を参考にする
+  decay_episodes: 1250 # 2500エピソードかけてゆっくり減衰
+
+  # 【単純化】傷病度別の教師確率を廃止し、単一の減衰スケジュールに統一
+
+# -------------------------------------------------------------------
+# カリキュラム学習 (フェーズを単純化)
+# -------------------------------------------------------------------
+curriculum:
+  enabled: true
+  stages:
+    # フェーズ1: 模倣による基礎学習 (0-1500エピソード)
+    - episodes: [0, 1500]
+      description: "徹底的な模倣フェーズ。teacher_probは高水準 (0.99 -> 0.6) を維持。"
+      goals:
+        - "vs_closest_improvement > -0.1" # ベースライン性能の90%以上を維持
+        
+    # フェーズ2: 誘導付き改善 (1500-3000エピソード)
+    - episodes: [1500, 3000]
+      description: "模倣を続けつつ(teacher_prob: 0.6 -> 0.3)、重症事案での改善を探索。"
+      goals:
+        - "critical_6min_rate > (baseline + 0.05)" # 重症6分率をベースラインから5%改善
+        - "achieved_13min_rate > (baseline - 0.02)" # 全体13分率の悪化を2%以内に抑制
+
+# -------------------------------------------------------------------
+# ネットワーク & 評価設定 (台数増加に合わせて調整)
+# -------------------------------------------------------------------
+network:
+  actor:
+    hidden_layers: [128, 64, 32]  # 台数増加に合わせて層を拡張
+    activation: relu
+    initialization: xavier_uniform
+  critic:
+    hidden_layers: [128, 64, 32]  # 台数増加に合わせて層を拡張
+    activation: relu
+    init_scale: 0.001 # Criticの初期出力をゼロに近づけ安定化
+
+evaluation:
+  interval: 100
+  n_eval_episodes: 10
+  compare_baselines: ["closest"]
+  metrics:
+    - "critical_6min_rate"
+    - "achieved_13min_rate"
+    - "mean_response_time"
+    - "vs_closest_improvement"
+
+# -------------------------------------------------------------------
+# 学習管理
+# -------------------------------------------------------------------
+training:
+  checkpoint_interval: 250
+  logging:
+    interval: 10
+    wandb: true
