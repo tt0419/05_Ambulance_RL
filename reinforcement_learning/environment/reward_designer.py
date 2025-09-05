@@ -55,6 +55,12 @@ class RewardDesigner:
         # エピソードレベル設定
         self.episode_config = self.reward_config.get('episode', {})
         
+        # ★★★【修正箇所】★★★
+        # コンフィグからカバレッジのペナルティ閾値を読み込む
+        coverage_config = config.get('coverage_params', {})
+        self.coverage_drop_threshold = coverage_config.get('drop_penalty_threshold', 0.05)
+        self.coverage_drop_weight = coverage_config.get('drop_penalty_weight', -20.0)
+        
         print(f"RewardDesigner初期化完了: モード={self.mode}")
     
     def _initialize_mode_params(self):
@@ -96,6 +102,8 @@ class RewardDesigner:
                              severity: str,
                              response_time: float,
                              coverage_impact: float = 0.0,
+                             coverage_before: float = 0.0,
+                             coverage_after: float = 0.0,
                              additional_info: Optional[Dict] = None) -> float:
         """
         ステップ報酬を計算（メインインターフェース）
@@ -104,6 +112,8 @@ class RewardDesigner:
             severity: 傷病度
             response_time: 応答時間（秒）
             coverage_impact: カバレッジへの影響（0-1）
+            coverage_before: 行動前のカバレッジ率
+            coverage_after: 行動後のカバレッジ率
             additional_info: 追加情報
             
         Returns:
@@ -124,6 +134,18 @@ class RewardDesigner:
         if coverage_impact > 0 and self.coverage_weight > 0:
             coverage_penalty = -coverage_impact * self.coverage_weight * 10.0
             reward += coverage_penalty
+        
+        # ★★★【修正箇所④】★★★
+        # --- 新しいカバレッジ低下ペナルティ ---
+        coverage_drop_penalty = 0.0
+        coverage_drop_ratio = coverage_before - coverage_after
+        
+        # ★★★【修正箇所】★★★
+        # ハードコーディングされた値を、コンフィグから読み込んだ変数に置き換える
+        if coverage_drop_ratio > self.coverage_drop_threshold:
+            coverage_drop_penalty = self.coverage_drop_weight * (coverage_drop_ratio ** 2)
+        
+        reward += coverage_drop_penalty
         
         # クリッピング
         return np.clip(reward, -100.0, 100.0)

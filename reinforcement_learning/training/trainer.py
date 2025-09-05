@@ -417,8 +417,8 @@ class PPOTrainer:
             
             # ベースライン性能（推定値 - 実際のベースライン実験結果に基づく）
             baseline_performance = {
-                'closest': -3200,  # 直近隊運用の推定性能
-                'severity_based': -2800,  # 傷病度考慮運用の推定性能
+                'closest': 12.99,  # 直近隊運用の推定性能
+                # 'severity_based': -2800,  # 傷病度考慮運用の推定性能
             }
             
             # 改善率計算

@@ -43,10 +43,17 @@ class StateEncoder:
         self.ambulance_features = 5  # 位置x, 位置y, 状態, 出動回数, 事案現場までの移動時間
         self.incident_features = 10  # 位置、傷病度など
         self.temporal_features = 8  # 時間関連
-        self.spatial_features = 20  # 空間統計（改良版）
+        # ★★★【修正箇所①】★★★
+        # 空間特徴量の次元を1つ追加（カバレッジ率）
+        self.spatial_features = 21  # 空間統計（改良版）+ カバレッジ率
         
         # 傷病度のone-hotエンコーディング用
         self.severity_indices = SEVERITY_INDICES
+        
+        # ★★★【修正箇所】★★★
+        # コンフィグからカバレッジの時間閾値を読み込む
+        coverage_config = config.get('coverage_params', {})
+        self.coverage_time_threshold = coverage_config.get('time_threshold_seconds', 600)
         
     def encode_state(self, state_dict: Dict, grid_mapping: Dict = None) -> np.ndarray:
         """
@@ -86,8 +93,9 @@ class StateEncoder:
         )
         features.append(temporal_features)
         
-        # 4. 空間的特徴量（改良版：実際の移動時間統計を使用）
-        spatial_features = self._encode_spatial_with_travel_time(
+        # ★★★【修正箇所②】★★★
+        # 4. 空間的特徴量（カバレッジ率を追加）
+        spatial_features = self._encode_spatial_with_coverage(
             state_dict['ambulances'],
             state_dict.get('pending_call'),
             grid_mapping
@@ -299,6 +307,60 @@ class StateEncoder:
             features[17] = available_count / 20.0  # 絶対数（20台で正規化）
             features[18] = min(available_count / 5.0, 1.0)  # 5台以上で飽和
             features[19] = 1.0 if available_count > 0 else 0.0  # 利用可能フラグ
+        
+        return features
+    
+    def _encode_spatial_with_coverage(self, ambulances: Dict, 
+                                    incident: Optional[Dict],
+                                    grid_mapping: Dict) -> np.ndarray:
+        """
+        空間的特徴量をエンコード。最後にカバレッジ率を追加する。
+        """
+        # 既存の空間特徴量（20次元）を計算
+        features = np.zeros(self.spatial_features)  # 21次元の配列を初期化
+        
+        # 既存の空間特徴量計算を呼び出して最初の20次元を埋める
+        existing_features = self._encode_spatial_with_travel_time(
+            ambulances, incident, grid_mapping
+        )
+        features[:20] = existing_features
+        
+        # --- 新しいカバレッジ特徴量の計算 ---
+        # 1. 利用可能な救急隊のH3インデックスを取得
+        available_amb_h3s = [
+            amb_state['current_h3'] 
+            for amb_state in ambulances.values() 
+            if amb_state['status'] == 'available'
+        ]
+
+        # 2. カバレッジを計算
+        coverage_ratio = 0.0
+        if available_amb_h3s and self.travel_time_matrix is not None and grid_mapping:
+            total_grids = len(grid_mapping)
+            covered_grids = set()
+            
+            # 各利用可能隊から10分以内のグリッドを調べる
+            for h3_index in available_amb_h3s:
+                amb_grid_idx = grid_mapping.get(h3_index)
+                if amb_grid_idx is None:
+                    continue
+
+                # 移動時間行列から、この救急隊からの移動時間リストを取得
+                travel_times_from_amb = self.travel_time_matrix[amb_grid_idx, :]
+                
+                # ★★★【修正箇所】★★★
+                # ハードコーディングされた600を、コンフィグから読み込んだ変数に置き換える
+                covered_indices = np.where(travel_times_from_amb <= self.coverage_time_threshold)[0]
+                
+                # setに追加して重複を除外
+                covered_grids.update(covered_indices)
+            
+            # 全グリッド数に対するカバーされたグリッド数の割合を計算
+            if total_grids > 0:
+                coverage_ratio = len(covered_grids) / total_grids
+        
+        # 計算したカバレッジ率を最後の特徴量として追加
+        features[20] = coverage_ratio
         
         return features
     

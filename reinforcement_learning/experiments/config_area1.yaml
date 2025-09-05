@@ -24,7 +24,7 @@ data_paths:
 
 experiment:
   name: "ppo_area1_simple_reward_v1"
-  description: "大規模な報酬設定ファイルの改変テスト"
+  description: "救急車の台数は増やせるのか検証"
   seed: 2025
   device: cuda
 
@@ -53,13 +53,13 @@ data:
 # PPOハイパーパラメータ (安定性重視で再調整)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 50000
+  n_episodes: 2500
   batch_size: 512
   
   # 学習率: Criticを少し高めに設定し、価値関数の学習を促進
   learning_rate:
-    actor: 0.00005  # 3e-5: 低めに維持
-    critic: 0.0001 # 1e-4: Actorより少し高く設定
+    actor: 0.002  # 3e-5: 低めに維持
+    critic: 0.01 # 1e-4: Actorより少し高く設定
     scheduler: constant
   
   # PPOパラメータ: 更新を少しだけ許容
@@ -85,7 +85,7 @@ reward:
       time_penalty_per_minute: -0.25  # 1分あたりのペナルティ
       
       # 達成ボーナス
-      critical_under_6min_bonus: 10.0   # 重症6分以内
+      critical_under_6min_bonus: 20.0   # 重症6分以内
       moderate_under_13min_bonus: 5.0   # 中等症13分以内
       mild_under_13min_bonus: 2.0       # 軽症13分以内
       
@@ -99,6 +99,12 @@ reward:
     # カバレッジは無効化（シンプル化のため）
     coverage_impact_weight: 0.0
   
+  # カバレッジ計算用のパラメータ
+  coverage_params:
+    time_threshold_seconds: 600  # 10分（秒単位）
+    drop_penalty_threshold: 0.05 # 5%以上の低下でペナルティ
+    drop_penalty_weight: -20.0   # 低下率に乗じるペナルティの重み
+
   # episodeセクションも簡略化
   episode:
     base_penalty_per_minute: -0.5
@@ -106,7 +112,7 @@ reward:
       rate_6min: 20.0        # 簡略化実験では控えめに
       rate_13min: 10.0
       critical_6min_rate: 30.0
-    failure_penalty_per_incident: -2.0  # 失敗ペナルティも軽減
+    failure_penalty_per_incident: -1.0  # 失敗ペナルティも軽減
 
 # -------------------------------------------------------------------
 # 教師あり学習 (模倣をさらに強化)
@@ -118,7 +124,7 @@ teacher:
   # カリキュラム: 最初はほぼ完全に模倣し、ゆっくり自律させる
   initial_prob: 0.99   # ほぼ100%模倣からスタート
   final_prob: 0.30     # 最終的にも30%は教師を参考にする
-  decay_episodes: 2500 # 2500エピソードかけてゆっくり減衰
+  decay_episodes: 1250 # 2500エピソードかけてゆっくり減衰
 
   # 【単純化】傷病度別の教師確率を廃止し、単一の減衰スケジュールに統一
 
