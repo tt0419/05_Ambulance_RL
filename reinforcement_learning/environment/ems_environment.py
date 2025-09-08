@@ -228,9 +228,34 @@ class EMSEnvironment:
         from .reward_designer import RewardDesigner
         self.reward_designer = RewardDesigner(self.config)
         
+        # DispatchLoggerの初期化
+        from .dispatch_logger import DispatchLogger
+        self.dispatch_logger = DispatchLogger(enabled=True)
+        
         # ServiceTimeGeneratorの初期化
         self._init_service_time_generator()        
         
+    def _row_is_virtual(self, row: pd.Series) -> bool:
+        """DataFrame行から仮想フラグを安全に判定（NaNはFalse）。"""
+        try:
+            value = row.get('is_virtual', False)
+        except Exception:
+            return False
+        # NaN対策
+        try:
+            if pd.isna(value):
+                return False
+        except Exception:
+            pass
+        # 真偽/文字列の両対応
+        if isinstance(value, (bool, np.bool_)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() in ['true', '1', 'yes', 'y']
+        if isinstance(value, (int, float)):
+            return int(value) == 1
+        return False
+
     def _setup_severity_mapping(self):
         """傷病度マッピングの設定"""
         self.severity_to_category = {}
@@ -341,6 +366,11 @@ class EMSEnvironment:
             self.ambulance_data = ambulance_data_full
             
         print(f"  救急署数: {len(self.ambulance_data)}")
+        
+        # ★★★ 仮想救急車の作成（学習モード時）★★★
+        if self.mode == 'train':
+            self.ambulance_data = self._create_virtual_ambulances_if_needed(self.ambulance_data)
+            print(f"  最終救急車数: {len(self.ambulance_data)}台")
         
         # 病院データ（方面に関係なく全体を使用）
         hospital_path = self.base_dir / "import/hospital_master.csv"
@@ -593,8 +623,27 @@ class EMSEnvironment:
                 
                 h3_index = h3.latlng_to_cell(lat, lng, 9)
                 
+                # 表示名（優先: team_name → name → フォールバック）
+                # 仮想隊は一律でvirtual_team_{id}、実隊はCSVのteam_name
+                is_virtual_row = self._row_is_virtual(row)
+                if is_virtual_row:
+                    display_name = f"virtual_team_{amb_id}"
+                else:
+                    try:
+                        display_name = row.get('team_name') if pd.notna(row.get('team_name')) else None
+                    except Exception:
+                        display_name = None
+                if not display_name:
+                    try:
+                        display_name = row.get('name') if pd.notna(row.get('name')) else None
+                    except Exception:
+                        display_name = None
+                if not display_name:
+                    display_name = f"救急車{amb_id}"
+
                 self.ambulance_states[amb_id] = {
                     'id': f"amb_{amb_id}",
+                    'name': display_name,
                     'station_h3': h3_index,
                     'current_h3': h3_index,
                     'status': 'available',
@@ -609,9 +658,40 @@ class EMSEnvironment:
         
         print(f"  救急車状態初期化完了: {len(self.ambulance_states)}台 (利用可能: {len(self.ambulance_states)}台)")
         
+        # 実際の救急車と仮想救急車の数を確認
+        real_count = 0
+        virtual_count = 0
+        for amb_id in range(len(self.ambulance_states)):
+            if amb_id < len(self.ambulance_data):
+                is_virtual = self._row_is_virtual(self.ambulance_data.iloc[amb_id])
+                if is_virtual:
+                    virtual_count += 1
+                else:
+                    real_count += 1
+            else:
+                virtual_count += 1
+        
+        print(f"  実際の救急車: {real_count}台, 仮想救急車: {virtual_count}台")
+        
+        # デバッグ: 最初の数台の救急車の詳細を表示
+        print("  救急車詳細（最初の5台）:")
+        for amb_id in range(min(5, len(self.ambulance_data))):
+            row = self.ambulance_data.iloc[amb_id]
+            is_virtual = row.get('is_virtual', False)
+            team_name = row.get('team_name', 'unknown')
+            print(f"    救急車{amb_id}: {team_name} ({'仮想' if is_virtual else '実車'})")
+        
         # 初期化直後のマスクチェック
         initial_mask = self.get_action_mask()
         print(f"  初期化直後の利用可能数: {initial_mask.sum()}台")
+        
+        # デバッグ: 救急車状態の詳細確認
+        if initial_mask.sum() == 0:
+            print("  ⚠️ 警告: 初期化時に利用可能な救急車が0台です")
+            for amb_id, amb_state in self.ambulance_states.items():
+                print(f"    救急車{amb_id}: status={amb_state['status']}, h3={amb_state['current_h3']}")
+        else:
+            print(f"  ✓ 正常: {initial_mask.sum()}台の救急車が利用可能")
     
     def step(self, action: int) -> StepResult:
         """
@@ -765,7 +845,86 @@ class EMSEnvironment:
             'matched_teacher': self.current_matched_teacher
         }
         
+        # 配車ログを記録
+        self._log_dispatch_action(result, amb_state)
+        
         return result
+    
+    def _log_dispatch_action(self, dispatch_result: Dict, ambulance_state: Dict):
+        """配車アクションのログを記録"""
+        if not hasattr(self, 'dispatch_logger') or not self.dispatch_logger.enabled:
+            return
+        
+        # 最適救急車を取得
+        optimal_ambulance_id = self.get_optimal_action()
+        optimal_response_time = None
+        if optimal_ambulance_id is not None:
+            optimal_response_time = self._calculate_travel_time(
+                self.ambulance_states[optimal_ambulance_id]['current_h3'],
+                self.pending_call['h3_index']
+            ) / 60.0
+        
+        # 利用可能救急車数とアクションマスク情報
+        available_count = sum(1 for amb in self.ambulance_states.values() 
+                            if amb['status'] == 'available')
+        total_count = len(self.ambulance_states)
+        action_mask = self.get_action_mask()
+        valid_action_count = action_mask.sum()
+        
+        # エピソード平均報酬
+        episode_reward_avg = 0.0
+        if hasattr(self, 'episode_stats') and self.episode_stats['total_dispatches'] > 0:
+            # 簡易的な平均報酬計算
+            episode_reward_avg = sum(self.episode_stats.get('rewards', [0])) / max(1, len(self.episode_stats.get('rewards', [1])))
+        
+        # 救急車情報を準備
+        ambulance_id = dispatch_result['ambulance_id']
+        
+        # シンプルかつ安全な判定: DataFrameから直接確認（NaNはFalse）
+        is_virtual = False
+        try:
+            if ambulance_id < len(self.ambulance_data):
+                is_virtual = self._row_is_virtual(self.ambulance_data.iloc[ambulance_id])
+        except Exception:
+            is_virtual = False
+        
+        # 表示名（デフォルトは状態キャッシュのname、なければデータフレーム由来）
+        display_name = ambulance_state.get('name')
+        try:
+            if not display_name and ambulance_id < len(self.ambulance_data):
+                row = self.ambulance_data.iloc[ambulance_id]
+                # 仮想は一律virtual_team、実隊はteam_name
+                if self._row_is_virtual(row):
+                    display_name = f"virtual_team_{ambulance_id}"
+                else:
+                    display_name = row.get('team_name') or row.get('name') or f"救急車{ambulance_id}"
+        except Exception:
+            display_name = f"救急車{ambulance_id}"
+
+        ambulance_info = {
+            'station_h3': ambulance_state.get('station_h3', 'unknown'),
+            'is_virtual': is_virtual,
+            'response_time_minutes': dispatch_result['response_time_minutes'],
+            'name': display_name
+        }
+        
+        # ログを記録
+        self.dispatch_logger.log_dispatch(
+            episode=self._episode_count,
+            step=self.episode_step,
+            call_info=self.pending_call,
+            selected_ambulance_id=dispatch_result['ambulance_id'],
+            ambulance_info=ambulance_info,
+            response_time_minutes=dispatch_result['response_time_minutes'],
+            available_count=available_count,
+            total_count=total_count,
+            action_mask_valid_count=valid_action_count,
+            optimal_ambulance_id=optimal_ambulance_id,
+            optimal_response_time=optimal_response_time,
+            teacher_match=dispatch_result.get('matched_teacher', False),
+            reward=0.0,  # 報酬は後で計算される
+            episode_reward_avg=episode_reward_avg
+        )
     
     def _calculate_ambulance_completion_time(self, ambulance_id: int, call: Dict, response_time: float) -> float:
         """救急車の活動完了時間を計算（ValidationSimulator互換）"""
@@ -840,6 +999,8 @@ class EMSEnvironment:
         
         # 9. 最終完了時刻
         completion_time = depart_hospital_time + return_time
+        
+        # 活動時間は実時間に合わせる（制限なし）
         
         if self.verbose_logging:
             print(f"救急車{ambulance_id}活動時間計算:")
@@ -1140,6 +1301,7 @@ class EMSEnvironment:
     def _update_ambulance_availability(self):
         """救急車の利用可能性を更新（validation_simulation互換版）"""
         # 救急車の復帰処理（ValidationSimulatorと同じロジック）
+        returned_count = 0
         for amb_id, amb_state in self.ambulance_states.items():
             if amb_state['status'] == 'dispatched':
                 if 'call_completion_time' in amb_state and amb_state['call_completion_time'] is not None:
@@ -1149,6 +1311,7 @@ class EMSEnvironment:
                         amb_state['current_h3'] = amb_state['station_h3']
                         amb_state['current_severity'] = None
                         amb_state['call_completion_time'] = None
+                        returned_count += 1
                         if self.verbose_logging:
                             print(f"救急車{amb_id}が帰署完了 (ステップ{self.episode_step})")
                 elif amb_state['last_dispatch_time'] is not None:
@@ -1158,7 +1321,13 @@ class EMSEnvironment:
                         amb_state['status'] = 'available'
                         amb_state['current_h3'] = amb_state['station_h3']
                         amb_state['current_severity'] = None
+                        returned_count += 1
                         print(f"警告: 救急車{amb_id}を強制復帰 (2時間経過)")
+        
+        # 復帰した救急車がある場合はログ出力
+        if returned_count > 0 and self.episode_step % 10 == 0:
+            available_count = sum(1 for amb in self.ambulance_states.values() if amb['status'] == 'available')
+            print(f"  {returned_count}台の救急車が復帰 (利用可能: {available_count}台)")
     
     def _get_max_wait_time(self, severity: str) -> int:
         """傷病度に応じた最大待機時間（分）- 現実的な救急システム"""
@@ -1423,3 +1592,152 @@ class EMSEnvironment:
                 rate_6min = self.episode_stats['achieved_6min'] / self.episode_stats['total_dispatches'] * 100
                 print(f"  平均応答時間: {avg_rt:.1f}分")
                 print(f"  6分達成率: {rate_6min:.1f}%")
+    
+    def _create_virtual_ambulances_if_needed(self, actual_ambulances: pd.DataFrame) -> pd.DataFrame:
+        """
+        必要に応じて仮想救急車を作成
+        
+        Args:
+            actual_ambulances: 実際の救急車データ
+            
+        Returns:
+            仮想救急車を含む救急車データ
+        """
+        # 設定から仮想救急車パラメータを取得
+        data_config = self.config.get('data', {})
+        virtual_count = data_config.get('virtual_ambulances', None)
+        multiplier = data_config.get('ambulance_multiplier', 1.0)
+        
+        if virtual_count and virtual_count > 0:
+            # 仮想救急車を追加（既存の救急車は保持）
+            target_count = len(actual_ambulances) + virtual_count
+            print(f"  仮想救急車追加: {len(actual_ambulances)}台 → {target_count}台 (追加: {virtual_count}台)")
+            return self._create_virtual_ambulances(actual_ambulances, target_count)
+        elif multiplier > 1.0:
+            # 既存の救急車を複製
+            target_count = int(len(actual_ambulances) * multiplier)
+            print(f"  救急車複製: {len(actual_ambulances)}台 → {target_count}台 (倍率: {multiplier})")
+            return self._duplicate_ambulances(actual_ambulances, target_count)
+        else:
+            # 仮想救急車は作成しない
+            return actual_ambulances
+    
+    def _create_virtual_ambulances(self, actual_ambulances: pd.DataFrame, target_count: int) -> pd.DataFrame:
+        """
+        既存の救急署から均等に仮想救急車を追加
+        
+        Args:
+            actual_ambulances: 実際の救急車データ
+            target_count: 目標救急車数
+            
+        Returns:
+            仮想救急車を含む救急車データ
+        """
+        result_ambulances = actual_ambulances.copy()
+        
+        # 救急署ごとにグループ化（H3インデックスで）
+        stations = {}
+        for _, amb in actual_ambulances.iterrows():
+            try:
+                # H3インデックスを計算
+                lat = float(amb['latitude'])
+                lng = float(amb['longitude'])
+                station_h3 = h3.latlng_to_cell(lat, lng, 9)
+                
+                if station_h3 not in stations:
+                    stations[station_h3] = []
+                stations[station_h3].append(amb)
+            except Exception as e:
+                print(f"警告: 救急車のH3計算エラー: {e}")
+                continue
+        
+        print(f"  救急署数: {len(stations)}署")
+        print(f"  実際の救急車数: {len(actual_ambulances)}台")
+        
+        # 各署に仮想救急車を均等に追加
+        virtual_id_counter = len(actual_ambulances)
+        
+        while len(result_ambulances) < target_count:
+            for station_h3, station_ambs in stations.items():
+                if len(result_ambulances) >= target_count:
+                    break
+                
+                # この署に仮想救急車を1台追加
+                base_ambulance = station_ambs[0]  # 代表的な救急車をベースにする
+                virtual_ambulance = base_ambulance.copy()
+                
+                # 仮想救急車の識別情報を更新
+                virtual_ambulance['id'] = f"virtual_{virtual_id_counter}"
+                virtual_ambulance['name'] = f"virtual_team_{virtual_id_counter}"
+                virtual_ambulance['team_name'] = f"virtual_team_{virtual_id_counter}"
+                virtual_ambulance['is_virtual'] = True
+                
+                # 同じ署の位置を使用（位置は変更しない）
+                # 必要に応じて微細な位置調整も可能
+                lat_offset = np.random.uniform(-0.001, 0.001)  # 約100m以内
+                lng_offset = np.random.uniform(-0.001, 0.001)  # 約100m以内
+                
+                virtual_ambulance['latitude'] = float(virtual_ambulance['latitude']) + lat_offset
+                virtual_ambulance['longitude'] = float(virtual_ambulance['longitude']) + lng_offset
+                
+                # 座標の有効性チェック
+                if (-90 <= virtual_ambulance['latitude'] <= 90 and 
+                    -180 <= virtual_ambulance['longitude'] <= 180):
+                    
+                    # 仮想救急車を追加
+                    result_ambulances = pd.concat([result_ambulances, virtual_ambulance.to_frame().T], 
+                                                ignore_index=True)
+                    virtual_id_counter += 1
+                    
+                    print(f"  仮想救急車{virtual_id_counter-1}を署{station_h3}に追加")
+        
+        return result_ambulances
+    
+    def _duplicate_ambulances(self, actual_ambulances: pd.DataFrame, target_count: int) -> pd.DataFrame:
+        """
+        既存の救急車を複製
+        
+        Args:
+            actual_ambulances: 実際の救急車データ
+            target_count: 目標救急車数
+            
+        Returns:
+            複製された救急車データ
+        """
+        result_ambulances = actual_ambulances.copy()
+        
+        # 複製カウンタ
+        duplicate_counter = 0
+        
+        while len(result_ambulances) < target_count:
+            for _, base_ambulance in actual_ambulances.iterrows():
+                if len(result_ambulances) >= target_count:
+                    break
+                
+                # 既存の救急車を複製
+                duplicate_ambulance = base_ambulance.copy()
+                
+                # 複製救急車の識別情報を更新
+                duplicate_ambulance['id'] = f"duplicate_{duplicate_counter}"
+                duplicate_ambulance['name'] = f"複製救急車{duplicate_counter}"
+                
+                # 位置を少しずらす（半径300m以内のランダムな位置）
+                lat_offset = np.random.uniform(-0.0027, 0.0027)  # 約300m
+                lng_offset = np.random.uniform(-0.0027, 0.0027)  # 約300m
+                
+                duplicate_ambulance['latitude'] = float(duplicate_ambulance['latitude']) + lat_offset
+                duplicate_ambulance['longitude'] = float(duplicate_ambulance['longitude']) + lng_offset
+                
+                # 座標の有効性チェック
+                if (-90 <= duplicate_ambulance['latitude'] <= 90 and 
+                    -180 <= duplicate_ambulance['longitude'] <= 180):
+                    
+                    # 複製救急車を追加
+                    result_ambulances = pd.concat([result_ambulances, duplicate_ambulance.to_frame().T], 
+                                                ignore_index=True)
+                    duplicate_counter += 1
+                    
+                    if len(result_ambulances) >= target_count:
+                        break
+        
+        return result_ambulances

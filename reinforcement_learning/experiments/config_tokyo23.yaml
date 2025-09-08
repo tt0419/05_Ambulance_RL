@@ -45,6 +45,11 @@ data:
     num_ambulances_in_area: 192  # 東京23区の救急車数
     state_dim: 999  # 学習時の状態次元数（192*5+10+8+21=999）
     action_dim: 192  # 学習時の行動次元数
+  
+  # ★★★ 仮想救急車設定 ★★★
+  virtual_ambulances: 192  # 目標救急車数（実際の数 + 仮想数）
+  ambulance_multiplier: 1.0  # 救急車複製倍率（1.0 = 複製なし）
+  
   episode_duration_hours: 24
   train_periods:
     - start_date: "20230410"
