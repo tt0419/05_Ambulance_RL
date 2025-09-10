@@ -87,16 +87,21 @@ class RewardDesigner:
         elif self.mode == 'simple':
             self.simple_params = self.core_config.get('simple_params', {})
             if not self.simple_params:
-                # デフォルト値
+                # デフォルト値（より明確な報酬設計）
                 self.simple_params = {
-                    'time_penalty_per_minute': -0.25,
-                    'critical_under_6min_bonus': 10.0,
-                    'moderate_under_13min_bonus': 5.0,
-                    'mild_under_13min_bonus': 2.0,
-                    'over_13min_penalty': -2.0,
-                    'over_20min_penalty': -5.0,
-                    'imitation_bonus': 0.5
+                    'time_penalty_per_minute': -1.0,  # 時間ペナルティを強化
+                    'critical_under_6min_bonus': 20.0,  # 重症6分達成ボーナスを強化
+                    'moderate_under_13min_bonus': 10.0,  # 中等症13分達成ボーナスを強化
+                    'mild_under_13min_bonus': 5.0,  # 軽症13分達成ボーナスを強化
+                    'over_13min_penalty': -5.0,  # 13分超過ペナルティを強化
+                    'over_20min_penalty': -10.0,  # 20分超過ペナルティを強化
+                    'imitation_bonus': 2.0  # 教師模倣ボーナスを強化
                 }
+            
+            # デバッグ用：simpleモードのパラメータを表示
+            print(f"Simpleモード報酬パラメータ:")
+            for key, value in self.simple_params.items():
+                print(f"  {key}: {value}")
     
     def calculate_step_reward(self,
                              severity: str,
@@ -215,26 +220,49 @@ class RewardDesigner:
         params = self.simple_params
         
         # 基本時間ペナルティ
-        reward = params['time_penalty_per_minute'] * response_time_minutes
+        time_penalty = params['time_penalty_per_minute'] * response_time_minutes
+        reward = time_penalty
         
         # 達成ボーナス
         category = severity_to_category(severity)
+        achievement_bonus = 0.0
         if category == 'critical' and response_time_minutes <= 6:
-            reward += params['critical_under_6min_bonus']
+            achievement_bonus = params['critical_under_6min_bonus']
+            reward += achievement_bonus
         elif category == 'moderate' and response_time_minutes <= 13:
-            reward += params['moderate_under_13min_bonus']
+            achievement_bonus = params['moderate_under_13min_bonus']
+            reward += achievement_bonus
         elif category == 'mild' and response_time_minutes <= 13:
-            reward += params['mild_under_13min_bonus']
+            achievement_bonus = params['mild_under_13min_bonus']
+            reward += achievement_bonus
         
         # 閾値超過ペナルティ
+        threshold_penalty = 0.0
         if response_time_minutes > 13:
-            reward += params['over_13min_penalty']
+            threshold_penalty += params['over_13min_penalty']
         if response_time_minutes > 20:
-            reward += params['over_20min_penalty']
+            threshold_penalty += params['over_20min_penalty']
+        reward += threshold_penalty
         
         # 教師模倣ボーナス
+        imitation_bonus = 0.0
         if additional_info and additional_info.get('matched_teacher', False):
-            reward += params.get('imitation_bonus', 0.0)
+            imitation_bonus = params.get('imitation_bonus', 0.0)
+            reward += imitation_bonus
+        
+        # デバッグ用ログ（最初の数回のみ）
+        if not hasattr(self, '_debug_simple_count'):
+            self._debug_simple_count = 0
+        self._debug_simple_count += 1
+        
+        if self._debug_simple_count <= 3:
+            print(f"[Simple報酬詳細] 傷病度: {severity} ({category})")
+            print(f"  応答時間: {response_time_minutes:.1f}分")
+            print(f"  時間ペナルティ: {time_penalty:.2f}")
+            print(f"  達成ボーナス: {achievement_bonus:.2f}")
+            print(f"  閾値ペナルティ: {threshold_penalty:.2f}")
+            print(f"  模倣ボーナス: {imitation_bonus:.2f}")
+            print(f"  最終報酬: {reward:.2f}")
         
         return reward
     

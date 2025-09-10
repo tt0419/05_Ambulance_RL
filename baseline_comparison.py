@@ -49,9 +49,9 @@ from constants import SEVERITY_GROUPS
 # ============================================================
 EXPERIMENT_CONFIG = {
     # 比較する戦略のリスト（ここで戦略を追加・削除）
-    'strategies': [#'closest', 'severity_based',
+    'strategies': ['closest', 'severity_based',
                    # 'advanced_severity',
-                   'ppo_agent'  # ★★★ PPO戦略をコメントアウトで追加 ★★★
+                   #'ppo_agent'  # ★★★ PPO戦略をコメントアウトで追加 ★★★
                    ],
     
     # 各戦略の日本語表示名
@@ -79,8 +79,8 @@ EXPERIMENT_CONFIG = {
             'mild_conditions': SEVERITY_GROUPS['mild_conditions'],      # 統一された定数を使用
             
             # ★★★ 新規追加: パラメータ設定 ★★★
-            'time_score_weight': 0.8,            # 応答時間の重みを20%に
-            'coverage_loss_weight': 0.2,         # カバレッジ損失の重みを80%に
+            'time_score_weight': 0.2,            # 応答時間の重みを20%に
+            'coverage_loss_weight': 0.8,         # カバレッジ損失の重みを80%に
             'mild_time_limit_sec': 1080,         # 軽症の許容時間を18分(1080秒)に
             'moderate_time_limit_sec': 900       # 中等症の許容時間を15分(900秒)に
         },
@@ -90,7 +90,7 @@ EXPERIMENT_CONFIG = {
             'config_path': 'reinforcement_learning/experiments/config_area1.yaml',  # 第1方面限定の学習設定（学習時と同じ）
             # ★★★ 地域制限の設定を明示的に指定 ★★★
             'area_restriction': {
-                'enabled': True,
+                'enabled': False,
                 'area_name': '第一方面',
                 'section_code': 1,
                 'districts': ['千代田区', '中央区', '港区']
@@ -659,7 +659,7 @@ if __name__ == "__main__":
     # 【設定変更箇所2】実験パラメータ
     # ============================================================
     EXPERIMENT_PARAMS = {
-        'target_date': "20240401",  # 開始日
+        'target_date': "20241201",  # 開始日
         'duration_hours': 720,       # 30日間
         'num_runs': 5,              # 各戦略5回実行
         'output_base_dir': 'data/tokyo/experiments',

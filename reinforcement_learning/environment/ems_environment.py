@@ -725,6 +725,10 @@ class EMSEnvironment:
             # 報酬の計算
             reward = self._calculate_reward(dispatch_result)
             
+            # ログを記録
+            if dispatch_result['success']:
+                self._log_dispatch_action(dispatch_result, self.ambulance_states[action])
+            
             # 統計情報の更新
             self._update_statistics(dispatch_result)
             
@@ -845,9 +849,6 @@ class EMSEnvironment:
             'matched_teacher': self.current_matched_teacher
         }
         
-        # 配車ログを記録
-        self._log_dispatch_action(result, amb_state)
-        
         return result
     
     def _log_dispatch_action(self, dispatch_result: Dict, ambulance_state: Dict):
@@ -907,6 +908,12 @@ class EMSEnvironment:
             'response_time_minutes': dispatch_result['response_time_minutes'],
             'name': display_name
         }
+
+        # この時点で報酬を計算
+        if dispatch_result['success']:
+            reward = self._calculate_reward(dispatch_result)
+        else:
+            reward = 0.0
         
         # ログを記録
         self.dispatch_logger.log_dispatch(
@@ -922,7 +929,7 @@ class EMSEnvironment:
             optimal_ambulance_id=optimal_ambulance_id,
             optimal_response_time=optimal_response_time,
             teacher_match=dispatch_result.get('matched_teacher', False),
-            reward=0.0,  # 報酬は後で計算される
+            reward=reward,  # 報酬は後で計算される
             episode_reward_avg=episode_reward_avg
         )
     
@@ -1109,6 +1116,17 @@ class EMSEnvironment:
             coverage_impact=coverage_impact,
             additional_info=additional_info
         )
+        
+        # デバッグ用ログ（最初の数回のみ）
+        if hasattr(self, '_debug_reward_count'):
+            self._debug_reward_count += 1
+        else:
+            self._debug_reward_count = 1
+            
+        if self._debug_reward_count <= 5:
+            print(f"[報酬デバッグ] 傷病度: {severity}, 応答時間: {response_time/60:.1f}分, 報酬: {reward:.2f}")
+            print(f"  - カバレッジ影響: {coverage_impact:.3f}")
+            print(f"  - 教師一致: {additional_info.get('matched_teacher', False)}")
         
         return reward
     

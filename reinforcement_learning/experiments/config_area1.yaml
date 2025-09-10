@@ -152,11 +152,11 @@ curriculum:
 # -------------------------------------------------------------------
 network:
   actor:
-    hidden_layers: [64, 32]
+    hidden_layers: [256, 128]
     activation: relu
     initialization: xavier_uniform
   critic:
-    hidden_layers: [64, 32]
+    hidden_layers: [256, 128]
     activation: relu
     init_scale: 0.001 # Criticの初期出力をゼロに近づけ安定化
 

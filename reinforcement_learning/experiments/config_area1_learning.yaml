@@ -25,7 +25,7 @@ data_paths:
 
 experiment:
   name: "ppo_area1_simple_reward_v1"
-  description: "救急車の台数は増やせるのか検証"
+  description: "隠れ層の次元を変更"
   seed: 2025
   device: cuda
 
@@ -39,9 +39,9 @@ data:
     section_code: 1
     districts: ["千代田区", "中央区", "港区"]
     # ★★★ 次元数を明示的に定義（学習時と評価時の一貫性確保）★★★
-    num_ambulances_in_area: 128  # 仮想救急車を含む救急車数
-    state_dim: 679  # 学習時の状態次元数（128*5+10+8+21=638）
-    action_dim: 128  # 学習時の行動次元数
+    num_ambulances_in_area: 64  # 仮想救急車を含む救急車数
+    state_dim: 359  # 学習時の状態次元数（64*5+10+8+21=339）
+    action_dim: 64  # 学習時の行動次元数
   
   # ★★★ 仮想救急車設定（dataセクション直下に移動）★★★
   virtual_ambulances: 112  # 実際の16台に追加で48台（合計64台）
@@ -58,7 +58,7 @@ data:
 # PPOハイパーパラメータ (安定性重視で再調整)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 5000
+  n_episodes: 2000
   batch_size: 512
   
   # 学習率: 学習を促進するため適切な値に調整
@@ -87,7 +87,7 @@ reward:
     
     simple_params:
       # 基本的な時間ペナルティ
-      time_penalty_per_minute: -0.25  # 1分あたりのペナルティ
+      time_penalty_per_minute: -1.0  # 1分あたりのペナルティ
       
       # 達成ボーナス
       critical_under_6min_bonus: 20.0   # 重症6分以内
@@ -99,7 +99,7 @@ reward:
       over_20min_penalty: -5.0          # 20分超過
       
       # 教師模倣ボーナス（カリキュラム学習用）
-      imitation_bonus: 0.5              # 教師と同じ行動選択時
+      imitation_bonus: 0.0              # 教師と同じ行動選択時
     
     # カバレッジは無効化（シンプル化のため）
     coverage_impact_weight: 0.0
@@ -127,9 +127,9 @@ teacher:
   strategy: closest  # 教師は直近隊戦略
   
   # カリキュラム: 適度な模倣から開始し、早めに自律させる
-  initial_prob: 1.00    # 50%模倣からスタート
-  final_prob: 1.00     # 最終的には5%のみ教師を参考にする
-  decay_episodes: 5000 # 1000エピソードで減衰
+  initial_prob: 0.99    # 50%模倣からスタート
+  final_prob: 0.05     # 最終的には5%のみ教師を参考にする
+  decay_episodes: 1000 # 1000エピソードで減衰
 
   # 【単純化】傷病度別の教師確率を廃止し、単一の減衰スケジュールに統一
 
@@ -157,11 +157,11 @@ curriculum:
 # -------------------------------------------------------------------
 network:
   actor:
-    hidden_layers: [64, 32]
+    hidden_layers: [256, 128]
     activation: relu
     initialization: xavier_uniform
   critic:
-    hidden_layers: [64, 32]
+    hidden_layers: [256, 128]
     activation: relu
     init_scale: 0.001 # Criticの初期出力をゼロに近づけ安定化
 
