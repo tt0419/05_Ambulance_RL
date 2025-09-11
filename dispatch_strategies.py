@@ -25,7 +25,6 @@ from constants import (
     is_severe_condition, is_mild_condition, get_severity_time_limit
 )
 
-# ★★★【追加箇所①】★★★
 # PPOエージェントと関連モジュールをインポート
 # プロジェクトのルートパスを一時的に追加して、RLモジュールをインポート
 module_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '.'))
@@ -39,7 +38,7 @@ try:
 except ImportError as e:
     print(f"警告: PPOモジュールのインポートに失敗しました: {e}")
     PPO_AVAILABLE = False
-# ★★★【追加ここまで】★★★
+
 
 class DispatchPriority(Enum):
     """緊急度優先度（数値が小さいほど緊急度が高い）"""
@@ -184,7 +183,7 @@ class SeverityBasedStrategy(DispatchStrategy):
         if 'mild_conditions' in config:
             self.mild_conditions = config['mild_conditions']
         
-        # ★★★ 新規追加: 重みパラメータと時間制限の設定 ★★★
+        #重みパラメータと時間制限の設定
         self.time_score_weight = config.get('time_score_weight', self.time_score_weight)
         self.coverage_loss_weight = config.get('coverage_loss_weight', self.coverage_loss_weight)
         self.mild_time_limit_sec = config.get('mild_time_limit_sec', self.mild_time_limit_sec)
@@ -679,10 +678,154 @@ STRATEGY_CONFIGS = {
         'mild_delay_threshold': 720,  # 12分
         'high_utilization': 0.6,
         'moderate_time_limit': 1080,  # 18分
+    },
+    # ← 以下を追加
+    "second_ride_default": {
+        # デフォルト設定（2番目選択、時間制限なし）
+        'alternative_rank': 2,
+        'enable_time_limit': False,
+        'time_limit_seconds': 780
+    },
+    "second_ride_conservative": {
+        # 保守的設定（2番目選択、13分制限あり）
+        'alternative_rank': 2,
+        'enable_time_limit': True,
+        'time_limit_seconds': 780
+    },
+    "second_ride_aggressive": {
+        # 積極的設定（3番目選択、時間制限なし）
+        'alternative_rank': 3,
+        'enable_time_limit': False,
+        'time_limit_seconds': 780
+    },
+    "second_ride_time_limited": {
+        # 時間制限設定（2番目選択、10分制限）
+        'alternative_rank': 2,
+        'enable_time_limit': True,
+        'time_limit_seconds': 600
     }
 }
 
 # ★★★【追加箇所②】★★★
+# SecondRideStrategy クラスを追加
+class SecondRideStrategy(DispatchStrategy):
+    """
+    2番目優先配車戦略
+    - 軽症系（軽症・中等症）: 2番目に近い救急車を配車
+    - 重症系（重症・重篤・死亡）: 最寄りの救急車を配車（従来通り）
+    """
+    
+    def __init__(self):
+        super().__init__("second_ride", "rule_based")
+        
+        # 傷病度分類（統一された定数を使用）
+        self.severe_conditions = SEVERITY_GROUPS['severe_conditions']
+        self.mild_conditions = SEVERITY_GROUPS['mild_conditions']
+        
+        # デフォルトパラメータ
+        self.alternative_rank = 2  # 軽症系で選択する順位（2番目）
+        self.enable_time_limit = True  # 13分制限機能（デフォルトオフ）
+        self.time_limit_seconds = 780  # 13分制限の閾値（秒）
+        
+    def initialize(self, config: Dict):
+        """戦略の初期化"""
+        self.config = config
+        
+        # 設定可能パラメータの読み込み
+        self.alternative_rank = config.get('alternative_rank', self.alternative_rank)
+        self.enable_time_limit = config.get('enable_time_limit', self.enable_time_limit)
+        self.time_limit_seconds = config.get('time_limit_seconds', self.time_limit_seconds)
+        
+        # パラメータの妥当性チェック
+        if self.alternative_rank < 1:
+            print(f"警告: alternative_rank ({self.alternative_rank}) は1以上である必要があります。デフォルト値2を使用します。")
+            self.alternative_rank = 2
+            
+        if self.time_limit_seconds <= 0:
+            print(f"警告: time_limit_seconds ({self.time_limit_seconds}) は正の値である必要があります。デフォルト値780秒を使用します。")
+            self.time_limit_seconds = 780
+    
+    def select_ambulance(self,
+                        request: EmergencyRequest,
+                        available_ambulances: List[AmbulanceInfo],
+                        travel_time_func: callable,
+                        context: DispatchContext) -> Optional[AmbulanceInfo]:
+        """救急車を選択する"""
+        
+        if not available_ambulances:
+            return None
+        
+        # 傷病度による戦略分岐
+        if request.severity in self.severe_conditions:
+            # 重症系: 最寄りの救急車を選択（従来通り）
+            return self._select_closest(request, available_ambulances, travel_time_func)
+        elif request.severity in self.mild_conditions:
+            # 軽症系: 2番目に近い救急車を選択
+            return self._select_alternative_rank(request, available_ambulances, travel_time_func)
+        else:
+            # その他の傷病度: 最寄りを選択（フォールバック）
+            return self._select_closest(request, available_ambulances, travel_time_func)
+    
+    def _select_closest(self,
+                       request: EmergencyRequest,
+                       available_ambulances: List[AmbulanceInfo],
+                       travel_time_func: callable) -> Optional[AmbulanceInfo]:
+        """最寄りの救急車を選択"""
+        
+        min_time = float('inf')
+        closest_ambulance = None
+        
+        for ambulance in available_ambulances:
+            travel_time = travel_time_func(ambulance.current_h3, request.h3_index, 'response')
+            if travel_time < min_time:
+                min_time = travel_time
+                closest_ambulance = ambulance
+        
+        return closest_ambulance
+    
+    def _select_alternative_rank(self,
+                               request: EmergencyRequest,
+                               available_ambulances: List[AmbulanceInfo],
+                               travel_time_func: callable) -> Optional[AmbulanceInfo]:
+        """指定順位の救急車を選択（軽症系用）"""
+        
+        # 利用可能な救急車が指定順位未満の場合は最寄りを選択
+        if len(available_ambulances) < self.alternative_rank:
+            return self._select_closest(request, available_ambulances, travel_time_func)
+        
+        # 各救急車の移動時間を計算してソート
+        ambulance_times = []
+        for ambulance in available_ambulances:
+            travel_time = travel_time_func(ambulance.current_h3, request.h3_index, 'response')
+            ambulance_times.append((ambulance, travel_time))
+        
+        # 移動時間の昇順でソート
+        ambulance_times.sort(key=lambda x: x[1])
+        
+        # 指定順位の救急車を取得（インデックスは0ベースなので-1）
+        target_ambulance, target_time = ambulance_times[self.alternative_rank - 1]
+        
+        # 13分制限機能がオンの場合の処理
+        if self.enable_time_limit:
+            if target_time > self.time_limit_seconds:
+                # 13分を超える場合は最寄りを選択
+                return ambulance_times[0][0]  # 最寄り（1番目）を選択
+        
+        return target_ambulance
+    
+    def get_strategy_info(self) -> Dict:
+        """戦略の情報を取得"""
+        return {
+            'name': self.name,
+            'strategy_type': self.strategy_type,
+            'alternative_rank': self.alternative_rank,
+            'enable_time_limit': self.enable_time_limit,
+            'time_limit_seconds': self.time_limit_seconds,
+            'time_limit_minutes': self.time_limit_seconds / 60.0,
+            'severe_conditions': self.severe_conditions,
+            'mild_conditions': self.mild_conditions
+        }
+
 # PPOエージェントを戦略として使用する新しいクラス
 class PPOStrategy(DispatchStrategy):
     """学習済みPPOエージェントを使用する戦略"""
@@ -897,6 +1040,7 @@ class StrategyFactory:
         'severity_based': SeverityBasedStrategy,
         'advanced_severity': AdvancedSeverityStrategy,
         'ppo_agent': PPOStrategy,
+        'second_ride': SecondRideStrategy,  # ← この行を追加
     }
     
     @classmethod

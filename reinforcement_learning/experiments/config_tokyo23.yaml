@@ -23,7 +23,7 @@ data_paths:
 
 experiment:
   name: "ppo_tokyo23_simple_reward_v1"
-  description: "112720をベースに東京23区全域での実験_入力エンコーダの機能チェック"
+  description: "0910_192252をベースにepとbatchを拡大"
   seed: 2025
   device: cuda
 
@@ -62,8 +62,8 @@ data:
 # PPOハイパーパラメータ (安定性重視で再調整)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 5000
-  batch_size: 512  # 救急車台数増加に合わせてバッチサイズを拡大
+  n_episodes: 10000
+  batch_size: 1024  # 救急車台数増加に合わせてバッチサイズを拡大
   
   # 学習率: Criticを少し高めに設定し、価値関数の学習を促進
   learning_rate:

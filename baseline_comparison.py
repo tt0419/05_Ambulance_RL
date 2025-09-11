@@ -17,7 +17,9 @@ baseline_comparison.py
    - 学習済みモデル(.pth)と設定ファイル(.yaml)のパスを正しく設定
 """
 
+# OpenMPエラーの回避（ライブラリ競合対策）
 import os
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 import json
 import pandas as pd
 import numpy as np
@@ -49,9 +51,11 @@ from constants import SEVERITY_GROUPS
 # ============================================================
 EXPERIMENT_CONFIG = {
     # 比較する戦略のリスト（ここで戦略を追加・削除）
-    'strategies': ['closest', 'severity_based',
-                   # 'advanced_severity',
-                   #'ppo_agent'  # ★★★ PPO戦略をコメントアウトで追加 ★★★
+    'strategies': ['closest', 
+                   #'severity_based',
+                   'advanced_severity',
+                   #'ppo_agent',
+                   #'second_ride',
                    ],
     
     # 各戦略の日本語表示名
@@ -59,7 +63,8 @@ EXPERIMENT_CONFIG = {
         'closest': '直近隊運用',
         'severity_based': '傷病度考慮運用',
         'advanced_severity': '高度傷病度考慮運用',
-        'ppo_agent': 'PPOエージェント運用'  # ★★★ PPO戦略のラベルを追加 ★★★
+        'second_ride': '2番目選択運用',  
+        'ppo_agent': 'PPOエージェント運用' 
     },
     
     # 各戦略の色設定
@@ -67,7 +72,8 @@ EXPERIMENT_CONFIG = {
         'closest': '#3498db',        # 青
         'severity_based': '#e74c3c',  # 赤
         'advanced_severity': '#2ecc71', # 緑
-        'ppo_agent': '#9b59b6'       # 紫 ★★★ PPO戦略の色を追加 ★★★
+        'second_ride': '#f39c12',    # オレンジ 
+        'ppo_agent': '#9b59b6'       # 紫 
     },
     
     # 各戦略の設定（STRATEGY_CONFIGSから選択またはカスタム設定）
@@ -85,6 +91,12 @@ EXPERIMENT_CONFIG = {
             'moderate_time_limit_sec': 900       # 中等症の許容時間を15分(900秒)に
         },
         'advanced_severity': STRATEGY_CONFIGS['aggressive'],  # 推奨設定
+        # ← 以下を追加
+        'second_ride': {
+            'alternative_rank': 2,        # 2番目を選択
+            'enable_time_limit': False,   # 時間制限なし
+            'time_limit_seconds': 780     # 13分制限（使用しない）
+        },
         'ppo_agent': {  # ★★★ PPO戦略の設定を追加 ★★★
             'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20250829_154139/final_model.pth',  # 学習済みモデルのパス
             'config_path': 'reinforcement_learning/experiments/config_area1.yaml',  # 第1方面限定の学習設定（学習時と同じ）
@@ -654,12 +666,180 @@ def create_summary_report(analysis: Dict, output_dir: str):
     
     print(f"サマリーレポートを保存: {report_path}")
 
+# 様々な設定での実験例
+def run_second_ride_experiments():
+    """SecondRideStrategy の様々な設定での実験"""
+    
+    # 実験パラメータ
+    target_date = "20241201"
+    duration_hours = 168  # 1週間
+    num_runs = 3
+    
+    # 1. デフォルト設定での実験
+    print("=== SecondRideStrategy デフォルト設定での実験 ===")
+    EXPERIMENT_CONFIG['strategies'] = ['closest', 'second_ride']
+    EXPERIMENT_CONFIG['strategy_configs']['second_ride'] = {
+        'alternative_rank': 2,
+        'enable_time_limit': False,
+        'time_limit_seconds': 780
+    }
+    
+    results_default = run_comparison_experiment(
+        target_date=target_date,
+        duration_hours=duration_hours,
+        num_runs=num_runs,
+        output_base_dir='data/tokyo/experiments/second_ride_default',
+        wandb_project='second-ride-default'
+    )
+    
+    # 2. 時間制限ありでの実験
+    print("=== SecondRideStrategy 時間制限ありでの実験 ===")
+    EXPERIMENT_CONFIG['strategy_configs']['second_ride'] = {
+        'alternative_rank': 2,
+        'enable_time_limit': True,  # 時間制限あり
+        'time_limit_seconds': 780
+    }
+    
+    results_time_limited = run_comparison_experiment(
+        target_date=target_date,
+        duration_hours=duration_hours,
+        num_runs=num_runs,
+        output_base_dir='data/tokyo/experiments/second_ride_time_limited',
+        wandb_project='second-ride-time-limited'
+    )
+    
+    # 3. 3番目選択での実験
+    print("=== SecondRideStrategy 3番目選択での実験 ===")
+    EXPERIMENT_CONFIG['strategy_configs']['second_ride'] = {
+        'alternative_rank': 3,  # 3番目を選択
+        'enable_time_limit': False,
+        'time_limit_seconds': 780
+    }
+    
+    results_third_choice = run_comparison_experiment(
+        target_date=target_date,
+        duration_hours=duration_hours,
+        num_runs=num_runs,
+        output_base_dir='data/tokyo/experiments/second_ride_third_choice',
+        wandb_project='second-ride-third-choice'
+    )
+    
+    # 4. 全戦略比較実験
+    print("=== 全戦略比較実験 ===")
+    EXPERIMENT_CONFIG['strategies'] = ['closest', 'severity_based', 'second_ride']
+    EXPERIMENT_CONFIG['strategy_configs']['second_ride'] = {
+        'alternative_rank': 2,
+        'enable_time_limit': False,
+        'time_limit_seconds': 780
+    }
+    
+    results_comprehensive = run_comparison_experiment(
+        target_date=target_date,
+        duration_hours=duration_hours,
+        num_runs=num_runs,
+        output_base_dir='data/tokyo/experiments/comprehensive_comparison',
+        wandb_project='comprehensive-dispatch-comparison'
+    )
+    
+    return {
+        'default': results_default,
+        'time_limited': results_time_limited,
+        'third_choice': results_third_choice,
+        'comprehensive': results_comprehensive
+    }
+
+
+# validation_simulation.py での使用例
+def run_second_ride_validation():
+    """validation_simulation.py での SecondRideStrategy 使用例"""
+    
+    # validation_simulation.pyのrun_validation_simulation関数をインポート
+    from validation_simulation import run_validation_simulation
+    
+    # 基本的な使用
+    run_validation_simulation(
+        target_date_str="20241201",
+        output_dir="data/tokyo/simulation_results/second_ride_test",
+        simulation_duration_hours=24,
+        dispatch_strategy='second_ride',  # ← 戦略名を指定
+        strategy_config={
+            'alternative_rank': 2,
+            'enable_time_limit': False,
+            'time_limit_seconds': 780
+        }
+    )
+    
+    # 時間制限ありでの使用
+    run_validation_simulation(
+        target_date_str="20241201",
+        output_dir="data/tokyo/simulation_results/second_ride_time_limited",
+        simulation_duration_hours=24,
+        dispatch_strategy='second_ride',
+        strategy_config={
+            'alternative_rank': 2,
+            'enable_time_limit': True,   # 時間制限を有効化
+            'time_limit_seconds': 600    # 10分制限
+        }
+    )
+
+
+# 推奨実験シーケンス
+def recommended_experiment_sequence():
+    """推奨実験シーケンス"""
+    
+    # validation_simulation.pyのrun_validation_simulation関数をインポート
+    from validation_simulation import run_validation_simulation
+    
+    print("SecondRideStrategy 実験シーケンス開始")
+    
+    # Step 1: 短期間での動作確認
+    print("Step 1: 24時間での動作確認")
+    run_validation_simulation(
+        target_date_str="20241201",
+        output_dir="data/tokyo/simulation_results/second_ride_24h_test",
+        simulation_duration_hours=24,
+        dispatch_strategy='second_ride',
+        strategy_config={'alternative_rank': 2, 'enable_time_limit': False}
+    )
+    
+    # Step 2: ベースラインとの比較（1週間）
+    print("Step 2: ベースライン比較（1週間）")
+    EXPERIMENT_CONFIG['strategies'] = ['closest', 'second_ride']
+    EXPERIMENT_CONFIG['strategy_configs']['second_ride'] = {
+        'alternative_rank': 2,
+        'enable_time_limit': False
+    }
+    
+    run_comparison_experiment(
+        target_date="20241201",
+        duration_hours=168,
+        num_runs=3,
+        output_base_dir='data/tokyo/experiments/second_ride_vs_baseline',
+        wandb_project='second-ride-vs-baseline'
+    )
+    
+    # Step 3: パラメータ感度分析
+    print("Step 3: パラメータ感度分析")
+    for rank in [2, 3, 4]:
+        for time_limit in [False, True]:
+            config = {
+                'alternative_rank': rank,
+                'enable_time_limit': time_limit,
+                'time_limit_seconds': 780
+            }
+            
+            print(f"  実験: rank={rank}, time_limit={time_limit}")
+            # 実際の実験コードはここに...
+    
+    print("実験シーケンス完了")
+
+
 if __name__ == "__main__":
     # ============================================================
     # 【設定変更箇所2】実験パラメータ
     # ============================================================
     EXPERIMENT_PARAMS = {
-        'target_date': "20241201",  # 開始日
+        'target_date': "20240401",  # 開始日
         'duration_hours': 720,       # 30日間
         'num_runs': 5,              # 各戦略5回実行
         'output_base_dir': 'data/tokyo/experiments',
@@ -678,6 +858,9 @@ if __name__ == "__main__":
     
     print("\n実験完了！")
 
+    # # 推奨実験シーケンスを実行
+    # recommended_experiment_sequence()
+
 # ★★★【追加】PPO戦略の比較実験を実行する関数 ★★★
 def main_with_ppo():
     """
@@ -688,7 +871,7 @@ def main_with_ppo():
     
     # 実験パラメータ
     EXPERIMENT_PARAMS = {
-        'target_date': '20240101',  # シミュレーション対象日
+        'target_date': '20240401',  # シミュレーション対象日
         'duration_hours': 24,       # シミュレーション期間（時間）
         'num_runs': 3,              # 各戦略の実行回数（PPOは重いので少なめ）
         'output_base_dir': 'data/tokyo/experiments',
