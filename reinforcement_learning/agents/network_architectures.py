@@ -9,20 +9,38 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Dict, List, Optional
 
+# ModularStateEncoderのインポート
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from environment.modular_state_encoder import ModularStateEncoder
+
 class ActorNetwork(nn.Module):
     """
-    方策ネットワーク（Actor）
-    状態から行動確率分布を出力
+    改良版Actor Network（Modular State Encoderを使用）
     """
     
     def __init__(self, state_dim: int, action_dim: int, config: Dict):
         super(ActorNetwork, self).__init__()
         
         self.state_dim = state_dim
-        self.action_dim = action_dim  # 192台の救急車
+        self.action_dim = action_dim
         
-        # ネットワーク構造の設定
-        hidden_layers = config.get('network', {}).get('actor', {}).get('hidden_layers', [256, 128, 64])
+        # ★★★ Modular State Encoderを追加 ★★★
+        self.use_modular_encoder = config.get('use_modular_encoder', True)
+        
+        if self.use_modular_encoder:
+            # 設定から救急車数を取得（デフォルト16）
+            num_ambulances = config.get('num_ambulances', 16)
+            self.state_encoder = ModularStateEncoder(max_ambulances=num_ambulances)
+            encoded_dim = self.state_encoder.output_dim  # 96次元
+        else:
+            # 従来の方法（フォールバック）
+            encoded_dim = state_dim
+            self.state_encoder = None
+        
+        # ポリシーネットワーク
+        hidden_layers = config.get('network', {}).get('actor', {}).get('hidden_layers', [128, 64])
         activation = config.get('network', {}).get('actor', {}).get('activation', 'relu')
         dropout_rate = config.get('network', {}).get('actor', {}).get('dropout', 0.1)
         
@@ -31,18 +49,16 @@ class ActorNetwork(nn.Module):
             self.activation = nn.ReLU()
         elif activation == 'tanh':
             self.activation = nn.Tanh()
-        elif activation == 'gelu':
-            self.activation = nn.GELU()
         else:
             self.activation = nn.ReLU()
         
         # ネットワーク層の構築
         layers = []
-        prev_dim = state_dim
+        prev_dim = encoded_dim
         
         for hidden_dim in hidden_layers:
             layers.append(nn.Linear(prev_dim, hidden_dim))
-            layers.append(nn.LayerNorm(hidden_dim))  # 正規化層
+            layers.append(nn.LayerNorm(hidden_dim))
             layers.append(self.activation)
             layers.append(nn.Dropout(dropout_rate))
             prev_dim = hidden_dim
@@ -50,22 +66,17 @@ class ActorNetwork(nn.Module):
         # 最終層（行動確率出力）
         layers.append(nn.Linear(prev_dim, action_dim))
         
-        self.network = nn.Sequential(*layers)
+        self.policy_network = nn.Sequential(*layers)
         
         # 重み初期化
         self._initialize_weights()
         
     def _initialize_weights(self):
-        """重みの初期化（安全版）"""
+        """重みの初期化"""
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                # より小さな初期値で安定性を確保
                 nn.init.xavier_uniform_(module.weight, gain=0.5)
-                nn.init.constant_(module.bias, 0.0)
-                
-                # 最終層は特に小さく初期化
-                if module.out_features == self.action_dim:
-                    nn.init.xavier_uniform_(module.weight, gain=0.1)
+                if module.bias is not None:
                     nn.init.constant_(module.bias, 0.0)
     
     def forward(self, state: torch.Tensor) -> torch.Tensor:
@@ -78,8 +89,14 @@ class ActorNetwork(nn.Module):
         Returns:
             action_probs: 行動確率 [batch_size, action_dim]
         """
-        # ネットワークを通す
-        logits = self.network(state)
+        # ★★★ Modular Encoderを使用 ★★★
+        if self.state_encoder is not None:
+            encoded_state = self.state_encoder(state)
+        else:
+            encoded_state = state
+        
+        # ポリシーネットワークを通す
+        logits = self.policy_network(encoded_state)
         
         # Softmaxで確率分布に変換
         action_probs = F.softmax(logits, dim=-1)
@@ -92,8 +109,7 @@ class ActorNetwork(nn.Module):
 
 class CriticNetwork(nn.Module):
     """
-    価値ネットワーク（Critic）
-    状態から状態価値を出力
+    改良版Critic Network（Modular State Encoderを使用）
     """
     
     def __init__(self, state_dim: int, config: Dict):
@@ -101,24 +117,31 @@ class CriticNetwork(nn.Module):
         
         self.state_dim = state_dim
         
-        # ネットワーク構造の設定
-        hidden_layers = config.get('network', {}).get('critic', {}).get('hidden_layers', [256, 128])
+        # ★★★ Modular State Encoderを追加 ★★★
+        self.use_modular_encoder = config.get('use_modular_encoder', True)
+        
+        if self.use_modular_encoder:
+            num_ambulances = config.get('num_ambulances', 16)
+            self.state_encoder = ModularStateEncoder(max_ambulances=num_ambulances)
+            encoded_dim = self.state_encoder.output_dim  # 96次元
+        else:
+            encoded_dim = state_dim
+            self.state_encoder = None
+        
+        # 価値ネットワーク
+        hidden_layers = config.get('network', {}).get('critic', {}).get('hidden_layers', [128, 64])
         activation = config.get('network', {}).get('critic', {}).get('activation', 'relu')
         dropout_rate = config.get('network', {}).get('critic', {}).get('dropout', 0.1)
         
-        # 活性化関数の選択
+        # 活性化関数
         if activation == 'relu':
             self.activation = nn.ReLU()
-        elif activation == 'tanh':
-            self.activation = nn.Tanh()
-        elif activation == 'gelu':
-            self.activation = nn.GELU()
         else:
             self.activation = nn.ReLU()
         
         # ネットワーク層の構築
         layers = []
-        prev_dim = state_dim
+        prev_dim = encoded_dim
         
         for hidden_dim in hidden_layers:
             layers.append(nn.Linear(prev_dim, hidden_dim))
@@ -127,7 +150,6 @@ class CriticNetwork(nn.Module):
             layers.append(nn.Dropout(dropout_rate))
             prev_dim = hidden_dim
         
-        # 最終層（状態価値出力）
         self.feature_layers = nn.Sequential(*layers)
         self.value_head = nn.Linear(prev_dim, 1)
         
@@ -135,27 +157,25 @@ class CriticNetwork(nn.Module):
         self._initialize_weights()
     
     def _initialize_weights(self):
-        """重みの初期化（修正版）"""
+        """重みの初期化"""
         for module in self.feature_layers.modules():
             if isinstance(module, nn.Linear):
                 nn.init.orthogonal_(module.weight, gain=np.sqrt(2))
-                nn.init.constant_(module.bias, 0.0)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0.0)
         
-        # 最終層の初期化を小さくする（重要！）
-        nn.init.orthogonal_(self.value_head.weight, gain=0.01)  # gain を小さく
+        nn.init.orthogonal_(self.value_head.weight, gain=0.01)
         nn.init.constant_(self.value_head.bias, 0.0)
     
     def forward(self, state: torch.Tensor) -> torch.Tensor:
-        """
-        順伝播
+        """順伝播"""
+        # ★★★ Modular Encoderを使用 ★★★
+        if self.state_encoder is not None:
+            encoded_state = self.state_encoder(state)
+        else:
+            encoded_state = state
         
-        Args:
-            state: 状態テンソル [batch_size, state_dim]
-            
-        Returns:
-            value: 状態価値 [batch_size, 1]
-        """
-        features = self.feature_layers(state)
+        features = self.feature_layers(encoded_state)
         value = self.value_head(features)
         return value
 

@@ -216,10 +216,16 @@ def main():
         
         # エージェントの初期化
         print("\nPPOエージェントを初期化中...")
+        # PPO設定にModularStateEncoderの設定を追加
+        ppo_config = config['ppo'].copy()
+        ppo_config['network'] = config.get('network', {})
+        ppo_config['use_modular_encoder'] = config['ppo'].get('use_modular_encoder', False)
+        ppo_config['num_ambulances'] = config['ppo'].get('num_ambulances', action_dim)
+        
         agent = PPOAgent(
             state_dim=state_dim,
             action_dim=action_dim,
-            config=config['ppo'],
+            config=ppo_config,
             device=config['experiment']['device']
         )
         

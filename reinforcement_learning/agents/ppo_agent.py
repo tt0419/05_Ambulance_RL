@@ -46,9 +46,14 @@ class PPOAgent:
         print(f"  行動次元: {action_dim}")
         print(f"  デバイス: {self.device}")
         
-        # ネットワークの初期化
-        self.actor = ActorNetwork(state_dim, action_dim, config).to(self.device)
-        self.critic = CriticNetwork(state_dim, config).to(self.device)
+        # ネットワークの初期化（ModularStateEncoderの設定を含む）
+        network_config = {
+            'network': config.get('network', {}),
+            'use_modular_encoder': config.get('use_modular_encoder', False),
+            'num_ambulances': config.get('num_ambulances', action_dim)
+        }
+        self.actor = ActorNetwork(state_dim, action_dim, network_config).to(self.device)
+        self.critic = CriticNetwork(state_dim, network_config).to(self.device)
         
         # オプティマイザ
         self.actor_optimizer = optim.Adam(

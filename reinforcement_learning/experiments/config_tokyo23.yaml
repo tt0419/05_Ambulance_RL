@@ -23,7 +23,7 @@ data_paths:
 
 experiment:
   name: "ppo_tokyo23_simple_reward_v1"
-  description: "東京23区全域での救急車配車最適化実験"
+  description: "112720をベースに東京23区全域での実験_入力エンコーダの機能チェック"
   seed: 2025
   device: cuda
 
@@ -46,9 +46,9 @@ data:
     state_dim: 999  # 学習時の状態次元数（192*5+10+8+21=999）
     action_dim: 192  # 学習時の行動次元数
   
-  # ★★★ 仮想救急車設定 ★★★
-  virtual_ambulances: 192  # 目標救急車数（実際の数 + 仮想数）
-  ambulance_multiplier: 1.0  # 救急車複製倍率（1.0 = 複製なし）
+  # # ★★★ 仮想救急車設定 ★★★
+  # virtual_ambulances: 192  # 目標救急車数（実際の数 + 仮想数）
+  # ambulance_multiplier: 1.0  # 救急車複製倍率（1.0 = 複製なし）
   
   episode_duration_hours: 24
   train_periods:
@@ -62,13 +62,13 @@ data:
 # PPOハイパーパラメータ (安定性重視で再調整)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 2500
-  batch_size: 1024  # 救急車台数増加に合わせてバッチサイズを拡大
+  n_episodes: 5000
+  batch_size: 512  # 救急車台数増加に合わせてバッチサイズを拡大
   
   # 学習率: Criticを少し高めに設定し、価値関数の学習を促進
   learning_rate:
-    actor: 0.00002  # 2e-5: 台数増加に合わせて少し下げる
-    critic: 0.00008 # 8e-5: Actorより少し高く設定
+    actor: 0.0003  # 2e-5: 台数増加に合わせて少し下げる
+    critic: 0.001 # 8e-5: Actorより少し高く設定
     scheduler: constant
   
   # PPOパラメータ: 更新を少しだけ許容
@@ -91,7 +91,7 @@ reward:
     
     simple_params:
       # 基本的な時間ペナルティ
-      time_penalty_per_minute: -0.25  # 1分あたりのペナルティ
+      time_penalty_per_minute: -1.0  # 1分あたりのペナルティ
       
       # 達成ボーナス
       critical_under_6min_bonus: 20.0   # 重症6分以内
@@ -131,9 +131,9 @@ teacher:
   strategy: closest  # 教師は直近隊戦略
   
   # カリキュラム: 最初はほぼ完全に模倣し、ゆっくり自律させる
-  initial_prob: 0.99   # ほぼ100%模倣からスタート
-  final_prob: 0.30     # 最終的にも30%は教師を参考にする
-  decay_episodes: 1250 # 2500エピソードかけてゆっくり減衰
+  initial_prob: 0.50   # ほぼ100%模倣からスタート
+  final_prob: 0.05     # 最終的にも30%は教師を参考にする
+  decay_episodes: 2500 # 2500エピソードかけてゆっくり減衰
 
   # 【単純化】傷病度別の教師確率を廃止し、単一の減衰スケジュールに統一
 
@@ -141,7 +141,7 @@ teacher:
 # カリキュラム学習 (フェーズを単純化)
 # -------------------------------------------------------------------
 curriculum:
-  enabled: true
+  enabled: false
   stages:
     # フェーズ1: 模倣による基礎学習 (0-1500エピソード)
     - episodes: [0, 1500]
@@ -161,11 +161,11 @@ curriculum:
 # -------------------------------------------------------------------
 network:
   actor:
-    hidden_layers: [128, 64, 32]  # 台数増加に合わせて層を拡張
+    hidden_layers: [256, 128]  # 台数増加に合わせて層を拡張
     activation: relu
     initialization: xavier_uniform
   critic:
-    hidden_layers: [128, 64, 32]  # 台数増加に合わせて層を拡張
+    hidden_layers: [256, 128]  # 台数増加に合わせて層を拡張
     activation: relu
     init_scale: 0.001 # Criticの初期出力をゼロに近づけ安定化
 
