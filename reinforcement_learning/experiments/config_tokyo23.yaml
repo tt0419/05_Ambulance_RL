@@ -23,7 +23,7 @@ data_paths:
 
 experiment:
   name: "ppo_tokyo23_simple_reward_v1"
-  description: "0910_192252をベースにepとbatchを拡大"
+  description: "0911_141120をベースに報酬設計を変更"
   seed: 2025
   device: cuda
 
@@ -91,16 +91,16 @@ reward:
     
     simple_params:
       # 基本的な時間ペナルティ
-      time_penalty_per_minute: -1.0  # 1分あたりのペナルティ
+      time_penalty_per_minute: -0.5  # 1分あたりのペナルティ
       
       # 達成ボーナス
-      critical_under_6min_bonus: 20.0   # 重症6分以内
+      critical_under_6min_bonus: 100.0   # 重症6分以内
       moderate_under_13min_bonus: 5.0   # 中等症13分以内
       mild_under_13min_bonus: 2.0       # 軽症13分以内
       
       # 閾値超過ペナルティ
-      over_13min_penalty: -2.0          # 13分超過
-      over_20min_penalty: -5.0          # 20分超過
+      over_13min_penalty: -1.0          # 13分超過
+      over_20min_penalty: -10.0          # 20分超過
       
       # 教師模倣ボーナス（カリキュラム学習用）
       imitation_bonus: 0.5              # 教師と同じ行動選択時

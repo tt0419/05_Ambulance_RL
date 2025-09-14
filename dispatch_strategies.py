@@ -404,11 +404,14 @@ advanced_severity_strategy.py
 重症系を強力に優先する高度な傷病度考慮戦略
 """
 
-class AdvancedSeverityStrategy(DispatchStrategy):
+class AdvancedSeverityStrategy(SeverityBasedStrategy):
     """高度な傷病度優先戦略：重症系への強い優先度付け"""
     
     def __init__(self):
-        super().__init__("advanced_severity", "rule_based")
+        super().__init__()
+        # 親クラスの設定を上書き
+        self.name = "advanced_severity"
+        self.strategy_type = "rule_based"
         
         # 傷病度カテゴリ（統一された定数を使用）
         self.critical_conditions = SEVERITY_GROUPS['critical_conditions']  # 最優先
@@ -420,20 +423,20 @@ class AdvancedSeverityStrategy(DispatchStrategy):
         self.params = {
             # 重篤・重症用
             'critical_search_radius': 480,  # 8分以内の救急車を全て考慮
-            'severe_search_radius': 420,    # 7分以内の救急車を考慮
+            'severe_search_radius': 540,    # 9分以内の救急車を考慮
             
             # 中等症用
             'moderate_time_limit': 900,     # 15分制限
             'moderate_coverage_weight': 0.3, # カバレッジ重視度を下げる
             
             # 軽症用
-            'mild_time_limit': 1080,        # 18分制限（大幅緩和）
+            'mild_time_limit': 900,        # 15分制限（大幅緩和）
             'mild_coverage_weight': 0.2,    # カバレッジ最小限
-            'mild_delay_threshold': 600,    # 10分以上かかる救急車を積極利用
+            'mild_delay_threshold': 480,    # 8分以上かかる救急車を積極利用
             
             # 繁忙期判定
-            'high_utilization': 0.65,       # 65%で繁忙期判定（早めに切り替え）
-            'critical_utilization': 0.80,   # 80%で緊急モード
+            'high_utilization': 0.75,       # 65%で繁忙期判定（早めに切り替え）
+            'critical_utilization': 0.85,   # 80%で緊急モード
         }
         
     def select_ambulance(self,
@@ -451,22 +454,24 @@ class AdvancedSeverityStrategy(DispatchStrategy):
         
         # 傷病度別の処理
         if request.severity in self.critical_conditions:
-            return self._select_for_critical(
-                request, available_ambulances, travel_time_func, utilization
-            )
+            # 重篤：直近隊
+            return self._get_closest(request, available_ambulances, travel_time_func)
         elif request.severity in self.severe_conditions:
-            return self._select_for_severe(
-                request, available_ambulances, travel_time_func, utilization
-            )
+            # 重症・死亡：直近隊
+            return self._get_closest(request, available_ambulances, travel_time_func)
         elif request.severity in self.moderate_conditions:
-            return self._select_for_moderate(
-                request, available_ambulances, travel_time_func, utilization
-            )
+            # 中等症：稼働率による分岐
+            if utilization > 0.75:
+                return self._get_closest(request, available_ambulances, travel_time_func)
+            else:
+                return self._select_with_coverage(request, available_ambulances, travel_time_func, context)
         else:  # 軽症
-            return self._select_for_mild(
-                request, available_ambulances, travel_time_func, utilization, context
-            )
-    
+            # 軽症：稼働率による分岐
+            if utilization > 0.75:
+                return self._get_closest(request, available_ambulances, travel_time_func)
+            else:
+                return self._select_with_coverage(request, available_ambulances, travel_time_func, context)
+        
     def _select_for_critical(self, request, ambulances, travel_time_func, utilization):
         """
         重篤用：最速到着を絶対優先
@@ -517,104 +522,44 @@ class AdvancedSeverityStrategy(DispatchStrategy):
         
         return best_amb
     
-    def _select_for_moderate(self, request, ambulances, travel_time_func, utilization):
-        """
-        中等症用：バランス型だが軽症より優先
-        15分以内で、重症系の邪魔をしない救急車を選択
-        """
+    def _select_for_moderate(self, request, ambulances, travel_time_func, utilization, context):
+        """中等症: SeverityBasedと同じカバレッジ考慮ロジック"""
+        return self._select_with_coverage(request, ambulances, travel_time_func, context)
+    
+    def _select_for_mild(self, request, ambulances, travel_time_func, utilization, context):
+        """軽症: SeverityBasedと同じカバレッジ考慮ロジック"""
+        return self._select_with_coverage(request, ambulances, travel_time_func, context)
+    
+    def _select_with_coverage(self, request, available_ambulances, travel_time_func, context):
+        """SeverityBasedStrategyと同じカバレッジ考慮ロジック"""
+        # SeverityBasedStrategyの_select_with_coverageメソッドの内容をそのままコピー
+        time_limit = get_severity_time_limit(request.severity)
+        
         candidates = []
-        for amb in ambulances:
+        for amb in available_ambulances:
             travel_time = travel_time_func(amb.current_h3, request.h3_index, 'response')
-            if travel_time <= self.params['moderate_time_limit']:
+            if travel_time <= time_limit:
                 candidates.append((amb, travel_time))
         
         if not candidates:
-            return self._get_closest(request, ambulances, travel_time_func)
+            return self._get_closest(request, available_ambulances, travel_time_func)
         
-        # 繁忙期：8分以上かかる救急車を優先
-        if utilization > self.params['high_utilization']:
-            # 遠い救急車から選ぶ（重症用を温存）
-            candidates.sort(key=lambda x: x[1], reverse=True)
-            for amb, travel_time in candidates:
-                if travel_time >= 480:  # 8分以上
-                    return amb
-        
-        # 平常期：バランス考慮
-        best_amb = None
+        best_ambulance = None
         best_score = float('inf')
         
         for amb, travel_time in candidates:
-            # 6分以内の救急車にはペナルティ
-            time_penalty = 0 if travel_time > 360 else (360 - travel_time) / 60
-            score = travel_time / 900 + time_penalty * 2
+            coverage_loss = self._calculate_coverage_loss(
+                amb, available_ambulances, travel_time_func, context
+            )
             
-            if score < best_score:
-                best_score = score
-                best_amb = amb
-        
-        return best_amb or candidates[0][0]
-    
-    def _select_for_mild(self, request, ambulances, travel_time_func, utilization, context):
-        """
-        軽症用：重症系リソースを避ける
-        遠い救急車を積極的に活用
-        """
-        # 全救急車を距離でソート
-        all_candidates = []
-        for amb in ambulances:
-            travel_time = travel_time_func(amb.current_h3, request.h3_index, 'response')
-            all_candidates.append((amb, travel_time))
-        
-        all_candidates.sort(key=lambda x: x[1])
-        
-        # 繁忙期：10分以上かかる救急車を最優先
-        if utilization > self.params['high_utilization']:
-            for amb, travel_time in all_candidates:
-                if travel_time >= self.params['mild_delay_threshold']:
-                    if travel_time <= self.params['mild_time_limit']:
-                        return amb
+            time_score = travel_time / 780  # 13分で正規化
+            combined_score = time_score * 0.6 + coverage_loss * 0.4
             
-            # 10分以上がなければ、6分以上から選択
-            for amb, travel_time in all_candidates:
-                if travel_time >= 360 and travel_time <= self.params['mild_time_limit']:
-                    return amb
+            if combined_score < best_score:
+                best_score = combined_score
+                best_ambulance = amb
         
-        # 平常期：18分以内で最も遠い利用可能な救急車
-        valid_candidates = [
-            (amb, tt) for amb, tt in all_candidates 
-            if tt <= self.params['mild_time_limit']
-        ]
-        
-        if not valid_candidates:
-            # 18分以内がない場合のみ最寄り
-            return all_candidates[0][0] if all_candidates else None
-        
-        # カバレッジを少し考慮しつつ、遠めを選択
-        best_amb = None
-        best_score = float('-inf')  # 高いスコアを選ぶ
-        
-        for amb, travel_time in valid_candidates:
-            # 遠いほど高スコア
-            distance_score = travel_time / self.params['mild_time_limit']
-            
-            # 6分以内の救急車は強くペナルティ
-            if travel_time < 360:
-                distance_score *= 0.3
-            elif travel_time < 480:
-                distance_score *= 0.6
-            
-            # 簡易カバレッジチェック（近隣に救急車が多いか）
-            coverage_bonus = self._count_nearby_available(
-                amb, ambulances, travel_time_func
-            ) * 0.1
-            
-            total_score = distance_score + coverage_bonus
-            
-            if total_score > best_score:
-                best_score = total_score
-                best_amb = amb
-        
-        return best_amb
+        return best_ambulance
     
     def _calculate_utilization_rate(self, context: DispatchContext) -> float:
         """稼働率計算"""

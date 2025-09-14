@@ -233,7 +233,16 @@ class EMSEnvironment:
         self.dispatch_logger = DispatchLogger(enabled=True)
         
         # ServiceTimeGeneratorの初期化
-        self._init_service_time_generator()        
+        self._init_service_time_generator()
+        
+        # ハイブリッドモード設定
+        self.hybrid_mode = self.config.get('hybrid_mode', {}).get('enabled', False)
+        if self.hybrid_mode:
+            self.severe_conditions = ['重症', '重篤', '死亡']
+            self.mild_conditions = ['軽症', '中等症']
+            self.direct_dispatch_count = 0  # 直近隊運用の回数
+            self.ppo_dispatch_count = 0     # PPO運用の回数
+            print("ハイブリッドモード有効: 重症系は直近隊、軽症系はPPO学習")
         
     def _row_is_virtual(self, row: pd.Series) -> bool:
         """DataFrame行から仮想フラグを安全に判定（NaNはFalse）。"""
@@ -695,7 +704,7 @@ class EMSEnvironment:
     
     def step(self, action: int) -> StepResult:
         """
-        環境のステップ実行
+        環境のステップ実行（ハイブリッドモード対応版）
         
         Args:
             action: 選択された救急車のインデックス
@@ -704,30 +713,96 @@ class EMSEnvironment:
             StepResult: 観測、報酬、終了フラグ、追加情報
         """
         try:
-            # デバッグ用: 最適行動との比較を出力
-            if hasattr(self, 'verbose_logging') and self.verbose_logging:
-                optimal_action = self.get_optimal_action()
-                if optimal_action is not None and action != optimal_action:
-                    optimal_time = self._calculate_travel_time(
-                        self.ambulance_states[optimal_action]['current_h3'],
-                        self.pending_call['h3_index']
-                    )
-                    actual_time = self._calculate_travel_time(
-                        self.ambulance_states[action]['current_h3'],
-                        self.pending_call['h3_index']
-                    )
-                    print(f"[選択比較] PPO選択: 救急車{action}({actual_time/60:.1f}分) "
-                        f"vs 最適: 救急車{optimal_action}({optimal_time/60:.1f}分)")
+            # 現在の事案を取得
+            current_incident = self.pending_call
             
-            # 行動の実行（救急車の配車）
-            dispatch_result = self._dispatch_ambulance(action)
-            
-            # 報酬の計算
-            reward = self._calculate_reward(dispatch_result)
+            # ハイブリッドモード：重症系は直近隊運用を強制
+            if self.hybrid_mode and current_incident:
+                severity = current_incident.get('severity', '')
+                
+                if severity in self.severe_conditions:
+                    # 重症系：直近隊運用を実行
+                    self.direct_dispatch_count += 1
+                    
+                    # 直近隊を自動選択
+                    closest_action = self._get_closest_ambulance_action(current_incident)
+                    
+                    # 直近隊で配車
+                    dispatch_result = self._dispatch_ambulance(closest_action)
+                    
+                    # 報酬は0（学習対象外）
+                    reward = 0.0
+                    
+                    # 統計情報を記録
+                    info = {
+                        'dispatch_result': dispatch_result,
+                        'dispatch_type': 'direct_closest',
+                        'severity': severity,
+                        'response_time': dispatch_result.get('response_time', 0),
+                        'skipped_learning': True,
+                        'episode_stats': self.episode_stats.copy(),
+                        'step': self.episode_step
+                    }
+                    
+                else:
+                    # 軽症系：PPOで学習
+                    self.ppo_dispatch_count += 1
+                    
+                    # PPOの行動を実行
+                    dispatch_result = self._dispatch_ambulance(action)
+                    
+                    # カバレッジ情報を計算
+                    coverage_info = self._calculate_coverage_info()
+                    
+                    # 報酬計算
+                    reward = self._calculate_reward(dispatch_result)
+                    
+                    # 追加情報
+                    info = {
+                        'dispatch_result': dispatch_result,
+                        'outcome': {
+                            'severity': severity,
+                            'response_time': dispatch_result.get('response_time', 0)
+                        },
+                        'coverage_info': coverage_info,
+                        'dispatch_type': 'ppo_learning',
+                        'severity': severity,
+                        'episode_stats': self.episode_stats.copy(),
+                        'step': self.episode_step
+                    }
+            else:
+                # 通常モード（既存の処理）
+                # デバッグ用: 最適行動との比較を出力
+                if hasattr(self, 'verbose_logging') and self.verbose_logging:
+                    optimal_action = self.get_optimal_action()
+                    if optimal_action is not None and action != optimal_action:
+                        optimal_time = self._calculate_travel_time(
+                            self.ambulance_states[optimal_action]['current_h3'],
+                            self.pending_call['h3_index']
+                        )
+                        actual_time = self._calculate_travel_time(
+                            self.ambulance_states[action]['current_h3'],
+                            self.pending_call['h3_index']
+                        )
+                        print(f"[選択比較] PPO選択: 救急車{action}({actual_time/60:.1f}分) "
+                            f"vs 最適: 救急車{optimal_action}({optimal_time/60:.1f}分)")
+                
+                # 行動の実行（救急車の配車）
+                dispatch_result = self._dispatch_ambulance(action)
+                
+                # 報酬の計算
+                reward = self._calculate_reward(dispatch_result)
+                
+                # 追加情報
+                info = {
+                    'dispatch_result': dispatch_result,
+                    'episode_stats': self.episode_stats.copy(),
+                    'step': self.episode_step
+                }
             
             # ログを記録
             if dispatch_result['success']:
-                self._log_dispatch_action(dispatch_result, self.ambulance_states[action])
+                self._log_dispatch_action(dispatch_result, self.ambulance_states[dispatch_result['ambulance_id']])
             
             # 統計情報の更新
             self._update_statistics(dispatch_result)
@@ -740,13 +815,6 @@ class EMSEnvironment:
             
             # 次の観測を取得
             observation = self._get_observation()
-            
-            # 追加情報
-            info = {
-                'dispatch_result': dispatch_result,
-                'episode_stats': self.episode_stats.copy(),
-                'step': self.episode_step
-            }
             
             # StepResultオブジェクトを返す
             return StepResult(
@@ -803,6 +871,78 @@ class EMSEnvironment:
         
         return best_action
 
+    def _get_closest_ambulance_action(self, incident):
+        """最寄りの救急車を選択するアクション番号を取得"""
+        available_ambulances = self.get_action_mask()
+        if not available_ambulances.any():
+            return 0
+        
+        min_distance = float('inf')
+        closest_idx = 0
+        
+        for idx, is_available in enumerate(available_ambulances):
+            if is_available and idx < len(self.ambulance_states):
+                amb_state = self.ambulance_states[idx]
+                distance = self._calculate_travel_time(
+                    amb_state['current_h3'], 
+                    incident['h3_index']
+                )
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_idx = idx
+        
+        return closest_idx
+
+    def _calculate_coverage_info(self):
+        """カバレッジ情報を計算"""
+        # 各地域の空き救急車までの平均距離を計算
+        coverage_scores = []
+        high_risk_scores = []
+        
+        # 簡易的なカバレッジ計算（利用可能救急車の割合）
+        available_count = sum(1 for amb in self.ambulance_states.values() 
+                             if amb['status'] == 'available')
+        total_count = len(self.ambulance_states)
+        
+        if total_count > 0:
+            overall_coverage = available_count / total_count
+            coverage_scores.append(overall_coverage)
+            
+            # 高リスク地域の判定（簡易版：重症系事案が多い地域を想定）
+            # 実際の実装では、過去の重症系事案データから高リスク地域を特定
+            high_risk_coverage = overall_coverage  # 簡略化
+        
+        return {
+            'overall_coverage': np.mean(coverage_scores) if coverage_scores else 0.0,
+            'high_risk_area_coverage': high_risk_coverage if 'high_risk_coverage' in locals() else 0.0,
+            'min_coverage': min(coverage_scores) if coverage_scores else 0.0
+        }
+
+    def is_high_risk_area(self, area):
+        """高リスク地域の判定（簡易版）"""
+        # 実際の実装では、過去の重症系事案データから判定
+        # ここでは簡易的にランダムで判定
+        return np.random.random() < 0.3  # 30%の確率で高リスク地域
+
+    def get_available_count_in_area(self, area):
+        """指定エリアの利用可能救急車数を取得（簡易版）"""
+        # 実際の実装では、エリア内の救急車をカウント
+        # ここでは全体の利用可能数を返す
+        return sum(1 for amb in self.ambulance_states.values() 
+                  if amb['status'] == 'available')
+
+    def get_total_count_in_area(self, area):
+        """指定エリアの総救急車数を取得（簡易版）"""
+        # 実際の実装では、エリア内の救急車をカウント
+        # ここでは全体の総数を返す
+        return len(self.ambulance_states)
+
+    @property
+    def areas(self):
+        """エリアリストを取得（簡易版）"""
+        # 実際の実装では、地理的エリアのリストを返す
+        # ここでは簡易的に1つのエリアを返す
+        return ['default_area']
 
     
     def _dispatch_ambulance(self, action: int) -> Dict:
@@ -1249,7 +1389,7 @@ class EMSEnvironment:
             return 5.0  # デフォルト5km
     
     def get_episode_statistics(self) -> Dict:
-        """エピソード統計を取得（RewardDesignerと連携）"""
+        """エピソード統計を取得（RewardDesignerと連携、ハイブリッドモード対応）"""
         stats = self.episode_stats.copy()
         
         # 集計値の計算
@@ -1285,6 +1425,14 @@ class EMSEnvironment:
             stats['efficiency_metrics']['distance_per_call'] = (
                 stats['efficiency_metrics']['total_distance'] / stats['total_dispatches']
             )
+        
+        # ハイブリッドモード統計の追加
+        if self.hybrid_mode:
+            stats['hybrid_stats'] = {
+                'direct_dispatch_count': self.direct_dispatch_count,
+                'ppo_dispatch_count': self.ppo_dispatch_count,
+                'direct_ratio': self.direct_dispatch_count / max(1, self.direct_dispatch_count + self.ppo_dispatch_count)
+            }
         
         # エピソード報酬を計算
         if self.reward_designer:

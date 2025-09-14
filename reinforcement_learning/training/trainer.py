@@ -73,6 +73,16 @@ class PPOTrainer:
         self.use_tensorboard = config['training']['logging']['tensorboard']
         self.use_wandb = config['training']['logging']['wandb']
         
+        # ハイブリッドモード設定
+        self.hybrid_mode = config.get('hybrid_mode', {}).get('enabled', False)
+        if self.hybrid_mode:
+            self.hybrid_stats = {
+                'severe_rt_history': [],
+                'mild_rt_history': [],
+                'coverage_history': [],
+                'episodes_with_warning': 0  # 20分超過エピソード数
+            }
+        
         # ★★★ wandb初期化の修正 ★★★
         if self.use_wandb:
             try:
@@ -161,10 +171,17 @@ class PPOTrainer:
         self._save_training_stats()
         
     def _run_episode(self, training: bool = True, force_teacher: bool = False) -> Tuple[float, int, Dict]:
-        """エピソードを実行"""
+        """エピソードを実行（ハイブリッドモード対応版）"""
         state = self.env.reset()
         episode_reward = 0.0
         episode_length = 0
+        
+        # ハイブリッドモード用の統計収集
+        episode_stats = {
+            'severe_cases': [],
+            'mild_cases': [],
+            'coverage_scores': []
+        }
         
         # 教師確率の計算（設定から適切に読み込む）
         if force_teacher:
@@ -224,12 +241,43 @@ class PPOTrainer:
             next_state = step_result.observation
             reward = step_result.reward
             done = step_result.done
+            info = step_result.info
+            
+            # ハイブリッドモード：統計収集
+            if self.hybrid_mode:
+                dispatch_type = info.get('dispatch_type', '')
+                severity = info.get('severity', '')
+                rt = info.get('response_time', 0)
+                
+                if dispatch_type == 'direct_closest':
+                    # 重症系（学習対象外だが統計は記録）
+                    episode_stats['severe_cases'].append({
+                        'severity': severity,
+                        'response_time': rt
+                    })
+                elif dispatch_type == 'ppo_learning':
+                    # 軽症系（学習対象）
+                    episode_stats['mild_cases'].append({
+                        'severity': severity,
+                        'response_time': rt,
+                        'reward': reward
+                    })
+                    
+                    # 20分超過チェック
+                    if rt > 1200:  # 20分 = 1200秒
+                        self.hybrid_stats['episodes_with_warning'] += 1
+                
+                # カバレッジスコア記録
+                if 'coverage_info' in info:
+                    episode_stats['coverage_scores'].append(
+                        info['coverage_info']['overall_coverage']
+                    )
             
             episode_reward += reward
             episode_length += 1
             
-            # 経験を保存（学習時のみ）
-            if training:
+            # 経験を保存（軽症系のみ学習対象）
+            if training and not (self.hybrid_mode and info.get('skipped_learning', False)):
                 self.agent.store_transition(
                     state=state,
                     action=action,
@@ -246,10 +294,19 @@ class PPOTrainer:
             if done:
                 break
         
-        # エピソード統計（拡張版統計を取得）
-        episode_stats = self.env.get_episode_statistics() if hasattr(self.env, 'get_episode_statistics') else self.env.episode_stats
+        # エピソード終了後の処理
+        if self.hybrid_mode:
+            self._update_hybrid_stats(episode_stats)
+            self._log_hybrid_metrics(episode_stats)
         
-        return episode_reward, episode_length, episode_stats
+        # エピソード統計（拡張版統計を取得）
+        env_stats = self.env.get_episode_statistics() if hasattr(self.env, 'get_episode_statistics') else self.env.episode_stats
+        
+        # ハイブリッドモードの場合は追加統計も含める
+        if self.hybrid_mode:
+            env_stats['hybrid_episode_stats'] = episode_stats
+        
+        return episode_reward, episode_length, env_stats
     
     def _evaluate(self) -> float:
         """
@@ -571,3 +628,45 @@ class PPOTrainer:
         print(f"  平均13分達成率: {mean_13min_rate:.2f} %")
         print("=" * 60)
         print("\nこの平均報酬が、PPOエージェントが目指すべき真の目標スコアです。")
+
+    def _update_hybrid_stats(self, episode_stats):
+        """ハイブリッドモード統計の更新"""
+        # 重症系RT
+        if episode_stats['severe_cases']:
+            severe_rts = [case['response_time'] for case in episode_stats['severe_cases']]
+            self.hybrid_stats['severe_rt_history'].append(np.mean(severe_rts))
+        
+        # 軽症系RT
+        if episode_stats['mild_cases']:
+            mild_rts = [case['response_time'] for case in episode_stats['mild_cases']]
+            self.hybrid_stats['mild_rt_history'].append(np.mean(mild_rts))
+        
+        # カバレッジ
+        if episode_stats['coverage_scores']:
+            self.hybrid_stats['coverage_history'].append(
+                np.mean(episode_stats['coverage_scores'])
+            )
+
+    def _log_hybrid_metrics(self, episode_stats):
+        """ハイブリッドモードのメトリクスをログ出力"""
+        if self.use_wandb:
+            metrics = {}
+            
+            # 重症系メトリクス（直近隊運用）
+            if episode_stats['severe_cases']:
+                severe_rts = [case['response_time'] / 60 for case in episode_stats['severe_cases']]
+                metrics['hybrid/severe_rt_mean'] = np.mean(severe_rts)
+                metrics['hybrid/severe_6min_rate'] = sum(1 for rt in severe_rts if rt <= 6) / len(severe_rts)
+            
+            # 軽症系メトリクス（PPO学習）
+            if episode_stats['mild_cases']:
+                mild_rts = [case['response_time'] / 60 for case in episode_stats['mild_cases']]
+                metrics['hybrid/mild_rt_mean'] = np.mean(mild_rts)
+                metrics['hybrid/mild_13min_rate'] = sum(1 for rt in mild_rts if rt <= 13) / len(mild_rts)
+                metrics['hybrid/mild_20min_over_rate'] = sum(1 for rt in mild_rts if rt > 20) / len(mild_rts)
+            
+            # カバレッジメトリクス
+            if episode_stats['coverage_scores']:
+                metrics['hybrid/coverage_mean'] = np.mean(episode_stats['coverage_scores'])
+            
+            wandb.log(metrics)

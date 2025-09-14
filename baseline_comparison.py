@@ -138,7 +138,7 @@ def run_comparison_experiment(
         print(f"wandbログイン成功: プロジェクト '{wandb_project}' に接続します")
     except Exception as e:
         print(f"警告: wandbログインに失敗しました。ローカルモードで実行します: {e}")
-        wandb.init(mode="disabled")
+        os.environ['WANDB_MODE'] = 'disabled'
     """
     複数戦略の比較実験を実行 (wandb連携版)
     
@@ -196,88 +196,76 @@ def run_comparison_experiment(
                 **flatten_dict(current_strategy_config, parent_key='strategy_params')
             }
             
-            # ★★★ 修正: wandbの実行をwith文で初期化 ★★★
-            try:
-                with wandb.init(
-                    project=wandb_project,
-                    config=config_for_wandb,
-                    group=f"{strategy}-{target_date}", # 同じ戦略の実行をグループ化
-                    # ★★★ 変更点: 生成した実行名を設定 ★★★
-                    name=run_name,
-                    job_type="simulation",
-                    tags=["baseline", strategy],
-                    reinit=True # ループ内で複数回initを呼ぶために必要
-                ) as run:
-                    
-                    # 出力ディレクトリの設定
-                    output_dir = os.path.join(
-                        output_base_dir,
-                        f"{strategy}_{target_date}_{duration_hours}h_run{run_idx + 1}"
-                    )
-                    os.makedirs(output_dir, exist_ok=True)
-                    
-                    # シミュレーション実行
-                    run_validation_simulation(
-                        target_date_str=target_date,
-                        output_dir=output_dir,
-                        simulation_duration_hours=duration_hours,
-                        random_seed=42 + run_idx,  # 各実行で異なるシード
-                        verbose_logging=False,
-                        dispatch_strategy=strategy,
-                        strategy_config=current_strategy_config
-                    )
-                    
-                    # 結果の読み込みとwandbへの記録
-                    report_path = os.path.join(output_dir, 'simulation_report.json')
-                    try:
-                        with open(report_path, 'r', encoding='utf-8') as f:
-                            report = json.load(f)
-                            results[strategy].append(report)
-                            
-                            # ★★★ 変更点: PPOのメトリクス名にマッピングしてログを記録 ★★★
-                            # 1. PPOと共通の主要メトリクスを抽出・名前変更
-                            unified_metrics = {}
-                            rt_stats = report.get('response_times', {})
-                            
-                            # 全体平均RT
-                            unified_metrics['charts/response_time_mean'] = rt_stats.get('overall', {}).get('mean', 0)
-                            
-                            # 傷病度別平均RT
-                            rt_by_severity = rt_stats.get('by_severity', {})
-                            unified_metrics['charts/response_time_mild_mean'] = rt_by_severity.get('軽症', {}).get('mean', 0)
-                            unified_metrics['charts/response_time_moderate_mean'] = rt_by_severity.get('中等症', {}).get('mean', 0)
-                            unified_metrics['charts/response_time_severe_mean'] = rt_by_severity.get('重症', {}).get('mean', 0)
-                            unified_metrics['charts/response_time_critical_mean'] = rt_by_severity.get('重篤', {}).get('mean', 0)
-                            
-                            # 重症6分以内到着率
-                            th_by_severity = report.get('threshold_performance', {}).get('by_severity', {}).get('6_minutes', {})
-                            unified_metrics['charts/response_time_severe_under_6min_rate'] = th_by_severity.get('重症', {}).get('rate', 0)
-                            
-                            # 2. 統一されたメトリクスをwandbに記録
-                            wandb.log(unified_metrics)
-                            
-                            # 3. (オプション) 元の詳細なレポートも別途記録
-                            wandb.log({"full_report": report})
+            # ★★★ 修正: wandbの初期化と実行（withを使わない） ★★★
+            # 出力ディレクトリの設定（先に作っておく）
+            output_dir = os.path.join(
+                output_base_dir,
+                f"{strategy}_{target_date}_{duration_hours}h_run{run_idx + 1}"
+            )
+            os.makedirs(output_dir, exist_ok=True)
 
-                            print(f"  - wandbに統一されたメトリクスを記録しました。 (Run Name: {run_name})")
-                    
-                    except FileNotFoundError:
-                        print(f"  - エラー: レポートファイルが見つかりません: {report_path}")
-                        # ★★★ 変更点: wandbにエラー情報を記録することも可能 ★★★
-                        wandb.log({"error": "report_not_found"})
-
-            except Exception as e:
-                print(f"  - wandb連携エラー: {e}")
-                # wandbのエラーが発生してもシミュレーション結果は保存
-                # 結果をローカルに保存
+            # wandb初期化（必要な場合のみ）
+            run = None
+            if os.environ.get('WANDB_MODE') == 'disabled':
+                print(f"  - wandbが無効化されているため、ローカルモードで実行します")
+            else:
                 try:
-                    with open(report_path, 'r', encoding='utf-8') as f:
-                        report = json.load(f)
-                        results[strategy].append(report)
-                        print(f"  - ローカルに結果を保存しました")
-                except:
-                    print(f"  - 警告: 結果の保存に失敗しました")
-                continue
+                    run = wandb.init(
+                        project=wandb_project,
+                        config=config_for_wandb,
+                        group=f"{strategy}-{target_date}",
+                        name=run_name,
+                        job_type="simulation",
+                        tags=["baseline", strategy],
+                        settings=wandb.Settings(init_timeout=120),
+                        resume="allow"
+                    )
+                except Exception as e:
+                    print(f"  - wandb連携エラー(初期化): {e}")
+                    run = None
+
+            # シミュレーション実行
+            run_validation_simulation(
+                target_date_str=target_date,
+                output_dir=output_dir,
+                simulation_duration_hours=duration_hours,
+                random_seed=42 + run_idx,
+                verbose_logging=False,
+                dispatch_strategy=strategy,
+                strategy_config=current_strategy_config
+            )
+
+            # 結果の読み込みとwandbへの記録
+            report_path = os.path.join(output_dir, 'simulation_report.json')
+            try:
+                with open(report_path, 'r', encoding='utf-8') as f:
+                    report = json.load(f)
+                    results[strategy].append(report)
+
+                    if run is not None:
+                        unified_metrics = {}
+                        rt_stats = report.get('response_times', {})
+                        unified_metrics['charts/response_time_mean'] = rt_stats.get('overall', {}).get('mean', 0)
+                        rt_by_severity = rt_stats.get('by_severity', {})
+                        unified_metrics['charts/response_time_mild_mean'] = rt_by_severity.get('軽症', {}).get('mean', 0)
+                        unified_metrics['charts/response_time_moderate_mean'] = rt_by_severity.get('中等症', {}).get('mean', 0)
+                        unified_metrics['charts/response_time_severe_mean'] = rt_by_severity.get('重症', {}).get('mean', 0)
+                        unified_metrics['charts/response_time_critical_mean'] = rt_by_severity.get('重篤', {}).get('mean', 0)
+                        th_by_severity = report.get('threshold_performance', {}).get('by_severity', {}).get('6_minutes', {})
+                        unified_metrics['charts/response_time_severe_under_6min_rate'] = th_by_severity.get('重症', {}).get('rate', 0)
+                        wandb.log(unified_metrics)
+                        wandb.log({"full_report": report})
+                        print(f"  - wandbに統一されたメトリクスを記録しました。 (Run Name: {run_name})")
+                    else:
+                        print(f"  - ローカルモードで実行完了 (Run Name: {run_name})")
+
+            except FileNotFoundError:
+                print(f"  - エラー: レポートファイルが見つかりません: {report_path}")
+                if run is not None:
+                    wandb.log({"error": "report_not_found"})
+            finally:
+                if run is not None:
+                    wandb.finish()
     
     # 結果の分析と比較
     print("\n" + "=" * 60)

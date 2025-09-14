@@ -13,6 +13,7 @@ import numpy as np
 from pathlib import Path
 import shutil
 import json
+import wandb
 
 # プロジェクトパスの設定
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -125,37 +126,78 @@ def main():
     # ベースライン計測モードを起動する引数を追加
     parser.add_argument('--baseline_mode', type=str, choices=['closest', 'severity_based'], default=None,
                        help='ベースライン計測モードで実行（例: closest）。PPO学習は行わず、指定した戦略の性能を計測します。')
+    # ハイブリッドモード対応の引数を追加
+    parser.add_argument('--hybrid', action='store_true',
+                       help='ハイブリッドモードを有効化')
+    parser.add_argument('--experiment', type=str, default=None,
+                       help='実験用設定ファイル（experiments/内）')
     
     args = parser.parse_args()
     
     # 設定ファイルの読み込み
-    print(f"\n設定ファイル読み込み: {args.config}")
+    if args.experiment:
+        config_path = f'reinforcement_learning/experiments/{args.experiment}'
+    else:
+        config_path = args.config
     
-    # パスの解決
-    config_path = args.config
-    if not os.path.exists(config_path):
-        # reinforcement_learning/ サブディレクトリを含むパスを試す
-        alt_config_path = f"reinforcement_learning/{config_path}"
-        if os.path.exists(alt_config_path):
-            config_path = alt_config_path
-            print(f"設定ファイルパス修正: {config_path}")
-        else:
-            print(f"❌ 設定ファイルが見つかりません:")
-            print(f"   試行1: {args.config}")
-            print(f"   試行2: {alt_config_path}")
-            print(f"   現在のディレクトリ: {os.getcwd()}")
-            print(f"   利用可能な設定ファイル:")
-            
-            # 利用可能な設定ファイルを探して表示
-            for root, dirs, files in os.walk('.'):
-                for file in files:
-                    if file.endswith('.yaml') and 'config' in file:
-                        print(f"     {os.path.join(root, file)}")
-            
-            sys.exit(1)
+    print(f"\n設定ファイル読み込み: {config_path}")
+    
+    # パスの解決（複数のパターンを試す）
+    possible_paths = [
+        config_path,  # 元のパス
+        f"reinforcement_learning/{config_path}",  # reinforcement_learning/ を追加
+        f"reinforcement_learning/experiments/{config_path}",  # experiments/ を追加
+    ]
+    
+    # 実験用設定ファイルの場合は追加パターンも試す
+    if args.experiment:
+        possible_paths.extend([
+            args.experiment,  # ファイル名のみ
+            f"experiments/{args.experiment}",  # experiments/ のみ
+        ])
+    
+    config_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            config_path = path
+            print(f"✓ 設定ファイル発見: {config_path}")
+            break
+    
+    if config_path is None:
+        print(f"❌ 設定ファイルが見つかりません:")
+        print(f"   試行したパス:")
+        for path in possible_paths:
+            print(f"     - {path}")
+        print(f"   現在のディレクトリ: {os.getcwd()}")
+        print(f"   利用可能な設定ファイル:")
+        
+        # 利用可能な設定ファイルを探して表示
+        for root, dirs, files in os.walk('.'):
+            for file in files:
+                if file.endswith('.yaml') and 'config' in file:
+                    print(f"     {os.path.join(root, file)}")
+        
+        sys.exit(1)
     
     # 設定ファイルの読み込みと継承処理
     config = load_config_with_inheritance(config_path)
+    
+    # ハイブリッドモードの設定
+    is_hybrid = config.get('hybrid_mode', {}).get('enabled', False)
+    if args.hybrid:
+        if 'hybrid_mode' not in config:
+            config['hybrid_mode'] = {}
+        config['hybrid_mode']['enabled'] = True
+        is_hybrid = True
+        print("=" * 60)
+        print("ハイブリッドモード: 有効")
+        print("- 重症系（重症・重篤・死亡）: 直近隊運用")
+        print("- 軽症系（軽症・中等症）: PPO学習")
+        if 'reward_weights' in config.get('hybrid_mode', {}):
+            print(f"- 報酬バランス: RT {config['hybrid_mode']['reward_weights']['response_time']:.0%}, "
+                  f"カバレッジ {config['hybrid_mode']['reward_weights']['coverage']:.0%}, "
+                  f"稼働 {config['hybrid_mode']['reward_weights']['workload_balance']:.0%}")
+        print("=" * 60)
     
     # デバイスの設定
     if args.device:
@@ -198,78 +240,114 @@ def main():
             print("学習をキャンセルしました。")
             return
     
+    # wandb初期化（ハイブリッドモード対応）
+    if config.get('training', {}).get('logging', {}).get('wandb', False):
+        wandb_project = config.get('training', {}).get('logging', {}).get('wandb_project', 'ems_ppo')
+        
+        wandb.init(
+            project=wandb_project,
+            name=f"{config.get('experiment', {}).get('name', 'unnamed')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            config=config,
+            tags=['hybrid'] if is_hybrid else ['normal']
+        )
+        print(f"W&B初期化完了: {wandb_project}")
+    
     # 乱数シードの設定
     set_random_seed(config['experiment']['seed'])
     
     try:
         # 環境の初期化
         print("\n環境を初期化中...")
-        env = EMSEnvironment(config_path, mode="train")
+        env = EMSEnvironment(config_path)
         
         # 状態・行動次元の取得
-        initial_state = env.reset()
-        state_dim = len(initial_state)
-        action_dim = env.action_dim  # 環境から実際の救急車台数を取得
+        state_dim = config['data']['area_restriction'].get('state_dim', env.state_dim)
+        action_dim = config['data']['area_restriction'].get('action_dim', env.action_dim)
         
         print(f"状態空間次元: {state_dim}")
         print(f"行動空間次元: {action_dim}")
         
         # エージェントの初期化
         print("\nPPOエージェントを初期化中...")
-        # PPO設定にModularStateEncoderの設定を追加
-        ppo_config = config['ppo'].copy()
-        ppo_config['network'] = config.get('network', {})
-        ppo_config['use_modular_encoder'] = config['ppo'].get('use_modular_encoder', False)
-        ppo_config['num_ambulances'] = config['ppo'].get('num_ambulances', action_dim)
-        
         agent = PPOAgent(
             state_dim=state_dim,
             action_dim=action_dim,
-            config=ppo_config,
-            device=config['experiment']['device']
+            config=config['ppo']
         )
         
         # トレーナーの初期化
         print("\nトレーナーを初期化中...")
-        trainer = PPOTrainer(
-            agent=agent,
-            env=env,
-            config=config,
-            output_dir=output_dir
-        )
+        trainer = PPOTrainer(agent, env, config, output_dir)
         
-        # ★★★【修正箇所②】★★★
-        # --baseline_mode 引数に基づいて処理を分岐させる
-        if args.baseline_mode:
-            # ベースライン計測モードの場合
-            print(f"\n【ベースライン計測モード: {args.baseline_mode}】")
-            trainer.run_baseline_evaluation(strategy=args.baseline_mode)
-        else:
-            # 通常のPPO学習モードの場合
-            if args.resume:
-                print(f"\nチェックポイントから再開: {args.resume}")
-                trainer.load_checkpoint(args.resume)
-            
-            print("\n" + "=" * 70)
-            print("PPO学習開始")
-            print("=" * 70)
-            
-            trainer.train()
+        # 学習の実行
+        print("\n学習を開始します...")
+        print("-" * 60)
+        
+        best_reward = trainer.train()
+        
+        # モデル保存
+        model_dir = 'models'
+        os.makedirs(model_dir, exist_ok=True)
+        
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        model_name = f"{'hybrid' if is_hybrid else 'normal'}_ppo_{timestamp}.pth"
+        model_path = os.path.join(model_dir, model_name)
+        
+        agent.save(model_path)
+        print(f"\nモデルを保存しました: {model_path}")
         
         print("\n" + "=" * 70)
         print("処理完了！")
         print(f"結果保存先: {output_dir}")
+        
+        # ハイブリッドモードの統計出力
+        if is_hybrid and hasattr(trainer, 'hybrid_stats'):
+            print("\n" + "=" * 60)
+            print("ハイブリッドモード学習結果:")
+            
+            stats = trainer.hybrid_stats
+            if stats.get('severe_rt_history') and len(stats['severe_rt_history']) > 0:
+                severe_rt_mean = np.mean(stats['severe_rt_history'])
+                print(f"- 重症系平均RT: {severe_rt_mean:.1f}秒 ({severe_rt_mean/60:.1f}分)")
+            else:
+                print("- 重症系平均RT: データなし")
+            
+            if stats.get('mild_rt_history') and len(stats['mild_rt_history']) > 0:
+                mild_rt_mean = np.mean(stats['mild_rt_history'])
+                print(f"- 軽症系平均RT: {mild_rt_mean:.1f}秒 ({mild_rt_mean/60:.1f}分)")
+            else:
+                print("- 軽症系平均RT: データなし")
+            
+            if stats.get('coverage_history') and len(stats['coverage_history']) > 0:
+                coverage_mean = np.mean(stats['coverage_history'])
+                print(f"- 平均カバレッジ: {coverage_mean:.2%}")
+            else:
+                print("- 平均カバレッジ: データなし")
+            
+            if 'episodes_with_warning' in stats:
+                total_episodes = config['ppo']['n_episodes']
+                warning_rate = stats['episodes_with_warning'] / total_episodes
+                print(f"- 20分超過エピソード: {stats['episodes_with_warning']}回 ({warning_rate:.1%})")
+            else:
+                print("- 20分超過エピソード: データなし")
+            
+            print("=" * 60)
+        
+        if best_reward is not None:
+            print(f"\n最終報酬: {best_reward:.2f}")
+        else:
+            print(f"\n最終報酬: 計算されませんでした")
         print("=" * 70)
         
     except KeyboardInterrupt:
-        print("\n\n学習が中断されました。")
-        print(f"途中結果: {output_dir}")
-        
+        print("\n\n学習を中断しました。")
     except Exception as e:
-        print(f"\n\nエラーが発生しました: {e}")
+        print(f"\nエラーが発生しました: {e}")
         import traceback
         traceback.print_exc()
-        print(f"\n途中結果: {output_dir}")
+    finally:
+        if config.get('training', {}).get('logging', {}).get('wandb', False):
+            wandb.finish()
 
 
 if __name__ == "__main__":

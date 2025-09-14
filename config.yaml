@@ -213,3 +213,37 @@ evaluation:
   compare_baselines:
     - "closest"  # 直近隊運用
     - "severity_based"  # ルールベース
+
+
+# ================================================================
+# ハイブリッドモード設定（重症系直近隊、軽症系PPO）
+# ================================================================
+hybrid_mode:
+  enabled: false  # デフォルトは無効（train_ppo.pyで上書き可能）
+  
+  # 傷病度分類
+  severity_classification:
+    severe_conditions: ["重症", "重篤", "死亡"]  # 直近隊運用
+    mild_conditions: ["軽症", "中等症"]           # PPO学習対象
+  
+  # 報酬設計
+  reward_weights:
+    response_time: 0.4      # A: 軽症系RT最小化（40%）
+    coverage: 0.5           # B: カバレッジ維持（50%）
+    workload_balance: 0.1   # C: 稼働バランス（10%）
+  
+  # 時間閾値（分）
+  time_thresholds:
+    good: 13       # 良好レベル
+    warning: 20    # 警告レベル（超過で重いペナルティ）
+  
+  # ペナルティ設定
+  penalties:
+    over_warning: -50.0  # 20分超過時のペナルティ
+    per_minute_over: -2.0  # 追加の分あたりペナルティ
+  
+  # カバレッジ評価
+  coverage_evaluation:
+    high_risk_weight: 0.7  # 高リスク地域の重み
+    normal_weight: 0.3     # 通常地域の重み
+    min_acceptable: 0.6    # 最低許容カバレッジ率
