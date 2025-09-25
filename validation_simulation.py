@@ -3047,9 +3047,9 @@ def run_validation_simulation(
 if __name__ == "__main__":
    # 例: 2023年1月1日のデータを対象に24時間シミュレーションを実行
    # 必要に応じて日付や期間を変更してください
-   target_day = "2023-01-01"
+   target_day = "2022-04-01"
    target_day_formatted = target_day.replace("-", "")  # "20230101"形式に変換
-   duration = 168 # 168時間 = 7日間, 720時間 = 30日間, 8760時間 = 1年間
+   duration = 720 # 168時間 = 7日間, 720時間 = 30日間, 8760時間 = 1年間
    
    # 詳細ログを出力する場合は verbose_logging=True に設定
    enable_verbose_logging = False # 病院選択ログを出力するためTrueに設定

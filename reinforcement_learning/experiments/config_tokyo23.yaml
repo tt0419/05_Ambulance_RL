@@ -28,6 +28,29 @@ experiment:
   device: cuda
 
 # -------------------------------------------------------------------
+# ハイブリッドモード設定（hybrid設定から主要項目を反映）
+# -------------------------------------------------------------------
+hybrid_mode:
+  enabled: false
+  severity_classification:
+    severe_conditions: ["重症", "重篤", "死亡"]
+    mild_conditions: ["軽症", "中等症"]
+  reward_weights:
+    response_time: 0.4
+    coverage: 0.5
+    workload_balance: 0.1
+  time_thresholds:
+    good: 13
+    warning: 20
+  penalties:
+    over_warning: -50.0
+    per_minute_over: -2.0
+  coverage_evaluation:
+    high_risk_weight: 0.7
+    normal_weight: 0.3
+    min_acceptable: 0.6
+
+# -------------------------------------------------------------------
 # データ設定 (東京23区全域に変更)
 # -------------------------------------------------------------------
 data:
@@ -62,7 +85,7 @@ data:
 # PPOハイパーパラメータ (安定性重視で再調整)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 10000
+  n_episodes: 5000
   batch_size: 1024  # 救急車台数増加に合わせてバッチサイズを拡大
   
   # 学習率: Criticを少し高めに設定し、価値関数の学習を促進
@@ -72,11 +95,11 @@ ppo:
     scheduler: constant
   
   # PPOパラメータ: 更新を少しだけ許容
-  n_epochs: 4
+  n_epochs: 6
   clip_epsilon: 0.1     # 0.05から少し広げ、更新の停滞を防ぐ
   gamma: 0.99
   gae_lambda: 0.95
-  entropy_coef: 0.01    # 台数増加に合わせて探索係数を調整
+  entropy_coef: 0.015    # 台数増加に合わせて探索係数を調整
   max_grad_norm: 0.5    # 勾配クリッピングを少し緩和
 
 # -------------------------------------------------------------------
@@ -85,34 +108,34 @@ ppo:
 reward:
   # systemセクションは継承（変更なし）
   
-  # coreセクションを簡略化モードに変更
+  # シンプルモード（カバレッジを含まない）を使用
   core:
-    mode: "simple"  # シンプルモードを使用
+    mode: "simple"
     
     simple_params:
       # 基本的な時間ペナルティ
-      time_penalty_per_minute: -0.5  # 1分あたりのペナルティ
+      time_penalty_per_minute: -0.1
       
       # 達成ボーナス
-      critical_under_6min_bonus: 100.0   # 重症6分以内
-      moderate_under_13min_bonus: 5.0   # 中等症13分以内
-      mild_under_13min_bonus: 2.0       # 軽症13分以内
+      critical_under_6min_bonus: 50.0
+      moderate_under_13min_bonus: 5.0
+      mild_under_13min_bonus: 2.0
       
       # 閾値超過ペナルティ
-      over_13min_penalty: -1.0          # 13分超過
-      over_20min_penalty: -10.0          # 20分超過
+      over_13min_penalty: -1.0
+      over_20min_penalty: -10.0
       
-      # 教師模倣ボーナス（カリキュラム学習用）
-      imitation_bonus: 0.5              # 教師と同じ行動選択時
+      # 教師模倣ボーナス（必要に応じて使用）
+      imitation_bonus: 0.5
     
-    # カバレッジは無効化（シンプル化のため）
-    coverage_impact_weight: 0.0
+    # カバレッジは無効化
+    coverage_impact_weight: 0.5
   
-  # カバレッジ計算用のパラメータ
+  # カバレッジ計算用のパラメータ（simpleでは使用しない）
   coverage_params:
-    time_threshold_seconds: 600  # 10分（秒単位）
-    drop_penalty_threshold: 0.05 # 5%以上の低下でペナルティ
-    drop_penalty_weight: -20.0   # 低下率に乗じるペナルティの重み
+    time_threshold_seconds: 600
+    drop_penalty_threshold: 0.05
+    drop_penalty_weight: -20.0
 
   # episodeセクションも簡略化
   episode:
@@ -127,7 +150,7 @@ reward:
 # 教師あり学習 (模倣をさらに強化)
 # -------------------------------------------------------------------
 teacher:
-  enabled: true
+  enabled: false
   strategy: closest  # 教師は直近隊戦略
   
   # カリキュラム: 最初はほぼ完全に模倣し、ゆっくり自律させる

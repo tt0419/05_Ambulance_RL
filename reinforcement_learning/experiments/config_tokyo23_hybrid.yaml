@@ -18,7 +18,7 @@ data_paths:
 
 experiment:
   name: "hybrid_ppo_tokyo23_v1"
-  description: "重症系直近隊・軽症系PPO学習のハイブリッド戦略"
+  description: "0918184111ベースに、8月で1週間をduration"
   seed: 2025
   device: cuda
 
@@ -74,24 +74,24 @@ data:
     state_dim: 999  # ハイブリッドモードでも同じ状態空間
     action_dim: 192
   
-  episode_duration_hours: 24
+  episode_duration_hours: 168
   
   # 学習期間（軽症系が多い期間と繁忙期の両方を含む）
   train_periods:
-    - start_date: "20230410"
-      end_date: "20230420"    # 10日間に延長
+    - start_date: "20230801"
+      end_date: "20230831"    # 10日間に延長
     # - start_date: "20231201"  # 繁忙期データ追加
     #   end_date: "20231210"
   
   eval_periods:
-    - start_date: "20240408"
-      end_date: "20240412"
+    - start_date: "20240801"
+      end_date: "20240831"
 
 # -------------------------------------------------------------------
 # PPOハイパーパラメータ (軽症系学習に最適化)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 5000  # 重症系をスキップするため、エピソード数を削減可能
+  n_episodes: 10000  # 重症系をスキップするため、エピソード数を削減可能
   batch_size: 1024
   
   # 学習率（config_tokyo23.yamlの設定を基本的に継承）
@@ -125,7 +125,7 @@ reward:
     # 軽症系用のシンプルな報酬パラメータ
     hybrid_params:
       # 基本時間ペナルティ（軽症系のみ適用）
-      time_penalty_per_minute: -0.3  # config_tokyo23より軽め
+      time_penalty_per_minute: -0.1  # config_tokyo23より軽め
       
       # 軽症系達成ボーナス
       mild_under_13min_bonus: 5.0
@@ -157,15 +157,15 @@ reward:
       # 重症系（直近隊運用の結果を評価）
       severe_6min_rate: 50.0  # 重症系6分以内率ボーナス
       # 軽症系（PPO学習の結果を評価）
-      mild_13min_rate: 20.0
-      mild_under_20min_rate: 30.0  # 20分以内率ボーナス
+      mild_13min_rate: 30.0
+      mild_under_20min_rate: 20.0  # 20分以内率ボーナス
     failure_penalty_per_incident: -1.0
 
 # -------------------------------------------------------------------
 # 教師あり学習 (軽症系のみに適用)
 # -------------------------------------------------------------------
 teacher:
-  enabled: true
+  enabled: false
   strategy: closest
   
   # ハイブリッドモード用：軽症系のみ教師学習
@@ -193,7 +193,7 @@ network:
 # 評価設定 (ハイブリッドモード用メトリクス追加)
 # -------------------------------------------------------------------
 evaluation:
-  interval: 50  # 評価間隔を短く
+  interval: 100  # 評価間隔を短く
   n_eval_episodes: 5
   compare_baselines: ["closest", "severity_based"]
   
@@ -231,7 +231,7 @@ training:
     mode: "min"  # 最小化
   
   logging:
-    interval: 10
+    interval: 500
     wandb: true
     wandb_project: "ems_hybrid_tokyo23"
     

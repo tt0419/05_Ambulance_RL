@@ -52,9 +52,9 @@ from constants import SEVERITY_GROUPS
 EXPERIMENT_CONFIG = {
     # 比較する戦略のリスト（ここで戦略を追加・削除）
     'strategies': ['closest', 
-                   #'severity_based',
-                   'advanced_severity',
-                   #'ppo_agent',
+                   'severity_based',
+                   #'advanced_severity',
+                   'ppo_agent',
                    #'second_ride',
                    ],
     
@@ -98,18 +98,17 @@ EXPERIMENT_CONFIG = {
             'time_limit_seconds': 780     # 13分制限（使用しない）
         },
         'ppo_agent': {  # ★★★ PPO戦略の設定を追加 ★★★
-            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20250829_154139/final_model.pth',  # 学習済みモデルのパス
-            'config_path': 'reinforcement_learning/experiments/config_area1.yaml',  # 第1方面限定の学習設定（学習時と同じ）
+            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20250914_092430/final_model.pth',  # 学習済みモデルのパス
+            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20250914_092430/configs/config.yaml',  # 学習時のconfigファイルのパス
             # ★★★ 地域制限の設定を明示的に指定 ★★★
-            'area_restriction': {
-                'enabled': False,
-                'area_name': '第一方面',
-                'section_code': 1,
-                'districts': ['千代田区', '中央区', '港区']
+            # 'area_restriction': {
+            #     'enabled': False,
+            #     'area_name': '第一方面',
+            #     'section_code': 1,
+            #     'districts': ['千代田区', '中央区', '港区']
             }
         }
     }
-}
 
 # ★★★ 変更点: レポートの辞書をフラット化するヘルパー関数を追加 ★★★
 def flatten_dict(d, parent_key='', sep='.'):
