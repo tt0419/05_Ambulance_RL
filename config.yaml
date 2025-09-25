@@ -1,108 +1,121 @@
-# config.yaml - すべての調整可能パラメータを一元管理
 # ================================================================
-# 実験設定
+# 基本設定ファイル
+# システムの動作に必要な基本設定を記載
+# 実験ごとの変更はconfig_tokyo23.yamlで行う
+# ================================================================
+
+# ================================================================
+# 実験基本設定（デフォルト値）
 # ================================================================
 experiment:
   name: "ppo_dispatch_optimization"
+  description: "救急車配車最適化"
   seed: 42
   device: "cuda"  # "cpu" or "cuda"
-  
+
 # ================================================================
-# データ設定（調整頻度：高）
+# データ基本設定
 # ================================================================
 data:
-  # 学習用データ期間
-  train_periods:
-    - start_date: "20230401"  # ← 変更箇所：学習開始日
-      end_date: "20230430"    # ← 変更箇所：学習終了日
-    - start_date: "20231201"  # 繁忙期データも含める
-      end_date: "20231230"
-  
-  # 評価用データ期間  
-  eval_periods:
-    - start_date: "20230501"  # ← 変更箇所：評価開始日
-      end_date: "20230507"    # ← 変更箇所：評価終了日
+  # データパス（システム必須）
+  data_paths:
+    grid_mapping: "data/tokyo/processed/grid_mapping_res9.json"
+    travel_time_matrix: "data/tokyo/calibration2/linear_calibrated_response.npy"
   
   # シミュレーション設定
-  episode_duration_hours: 24  # ← 変更箇所：1エピソードの長さ（時間）
+  episode_duration_hours: 24
+  
+  # デフォルトのエリア設定（個別設定で上書き）
+  area_restriction:
+    enabled: false
+    area_name: "default"
+    districts: []
+    num_ambulances_in_area: 100
+    state_dim: 527
+    action_dim: 100
+  
+  # デフォルト期間（個別設定で上書き）
+  train_periods:
+    - start_date: "20230401"
+      end_date: "20230430"
+  eval_periods:
+    - start_date: "20230501"
+      end_date: "20230507"
 
 # ================================================================
-# 評価時に必要となるデータパスの設定（調整頻度：低）
-# ================================================================
-data_paths:
-  grid_mapping: "data/tokyo/processed/grid_mapping_res9.json"
-  travel_time_matrix: "data/tokyo/calibration2/linear_calibrated_response.npy"
-
-# ================================================================
-# 傷病度設定（調整頻度：中）
+# 傷病度定義（システム固定）
 # ================================================================
 severity:
-  # 傷病度カテゴリと重み（重症・重篤・死亡は同じ重み）
   categories:
     critical:
-      conditions: ["重症", "重篤", "死亡"]  # ← 順序を統一（baseline_comparison.pyと同じ）
-      reward_weight: 5.0  # ← 変更箇所：重症系の重み
-      time_limit_seconds: 360  # 6分目標
-      
+      conditions: ["重症", "重篤", "死亡"]
+      time_limit_seconds: 360  # 6分
+      reward_weight: 5.0
     moderate:
       conditions: ["中等症"]
-      reward_weight: 2.0  # ← 変更箇所：中等症の重み
-      time_limit_seconds: 480  # 8分目標
-      
+      time_limit_seconds: 780  # 13分
+      reward_weight: 2.0
     mild:
       conditions: ["軽症"]
-      reward_weight: 1.0  # ← 変更箇所：軽症の重み
-      time_limit_seconds: 780  # 13分以内
-      
-  # 時間閾値設定
+      time_limit_seconds: 780  # 13分
+      reward_weight: 1.0
+  
   thresholds:
-    golden_time: 360  # 6分（重症系目標）← 変更箇所
-    standard_time: 780  # 13分（全体目標）← 変更箇所
+    golden_time: 360    # 6分（重症系目標）
+    standard_time: 780  # 13分（全体目標）
 
 # ================================================================
-# PPOハイパーパラメータ（調整頻度：高）
+# PPOデフォルト設定（個別設定で上書き可能）
 # ================================================================
 ppo:
-  # 学習設定
-  n_episodes: 15000  # ← 変更箇所：総エピソード数
-  n_epochs: 10  # ← 変更箇所：PPO更新エポック数
-  batch_size: 64  # ← 変更箇所：バッチサイズ
+  # 基本パラメータ（個別設定のデフォルトと同じ値）
+  n_episodes: 5000
+  batch_size: 1024
+  n_epochs: 6
+  clip_epsilon: 0.1
   
-  # PPOアルゴリズムパラメータ
-  clip_epsilon: 0.2  # ← 変更箇所：クリッピング範囲
-  gamma: 0.99  # ← 変更箇所：割引率
-  gae_lambda: 0.95  # ← 変更箇所：GAEパラメータ
-  
-  # 学習率設定
+  # 学習率（個別設定のデフォルトと同じ値）
   learning_rate:
-    actor: 0.0003  # ← 変更箇所：Actor学習率
-    critic: 0.0003  # ← 変更箇所：Critic学習率
-    scheduler: "cosine"  # "constant", "linear", "cosine"
-    
-  # エントロピー正則化
-  entropy_coef: 0.01  # ← 変更箇所：探索促進
+    actor: 0.0003
+    critic: 0.001
+    scheduler: "constant"
+  
+  # アルゴリズムパラメータ（通常変更しない）
+  gamma: 0.99
+  gae_lambda: 0.95
+  entropy_coef: 0.015
+  max_grad_norm: 0.5
 
 # ================================================================
-# 報酬関数設定（調整頻度：高）
+# 報酬システム設定（内部構造）
 # ================================================================
 reward:
-  # システムレベル：環境固有の基本動作（通常変更しない）
+  # システムレベル（環境の基本動作）
   system:
-    dispatch_failure: -1.0           # 配車失敗時のペナルティ
-    no_available_ambulance: 0.0      # 利用可能な救急車なし
-    unhandled_call_penalty: -1.0     # 対応不能事案の基本ペナルティ
-    
-  # コアレベル：学習の中核となる報酬（実験で調整）
+    dispatch_failure: -1.0
+    no_available_ambulance: 0.0
+    unhandled_call_penalty: -1.0
+  
+  # コア設定（個別設定のreward_modeで制御）
   core:
-    mode: "continuous"  # "continuous", "discrete", "simple"
+    mode: "simple"  # デフォルト値（個別設定で上書き）
     
-    # 連続報酬モード用パラメータ
+    # 各モードのデフォルト値（個別設定と同じ）
+    simple_params:
+      time_penalty_per_minute: -0.5
+      critical_under_6min_bonus: 30.0
+      moderate_under_13min_bonus: 10.0
+      mild_under_13min_bonus: 5.0
+      over_13min_penalty: -5.0
+      over_20min_penalty: -20.0
+      imitation_bonus: 0.0  # 教師なしなのでデフォルト0
+    
     continuous_params:
       critical:
-        target: 6           # 目標時間（分）
-        max_bonus: 50.0     # 最大ボーナス
-        penalty_scale: 5.0  # ペナルティスケール
-        weight: 5.0         # 重症度重み
+        target: 6
+        max_bonus: 50.0
+        penalty_scale: 5.0
+        weight: 5.0
       moderate:
         target: 13
         max_bonus: 20.0
@@ -114,7 +127,6 @@ reward:
         penalty_scale: 0.5
         weight: 1.0
     
-    # 離散報酬モード用パラメータ
     discrete_params:
       weights:
         response_time: 2.0
@@ -125,125 +137,124 @@ reward:
         over_13min: -15.0
         per_minute_over: -2.0
     
-    # カバレッジ影響（共通）
-    coverage_impact_weight: 0.5
+    # ハイブリッドモード用パラメータ
+    hybrid_params:
+      time_penalty_per_minute: -0.3
+      mild_under_13min_bonus: 5.0
+      moderate_under_13min_bonus: 10.0
+      over_13min_penalty: -5.0
+      over_20min_penalty: -50.0
+      good_coverage_bonus: 10.0
+      coverage_maintenance_bonus: 5.0
+      poor_coverage_penalty: -10.0
+      balanced_workload_bonus: 2.0
+      overloaded_penalty: -5.0
     
-  # エピソードレベル：エピソード全体の評価（必要に応じて調整）
+    # カバレッジ影響（デフォルト無効）
+    coverage_impact_weight: 0.0
+  
+  # カバレッジパラメータ（デフォルト値）
+  coverage_params:
+    time_threshold_seconds: 600
+    drop_penalty_threshold: 0.05
+    drop_penalty_weight: -20.0
+  
+  # エピソードレベル報酬
   episode:
-    base_penalty_per_minute: -1.0
+    base_penalty_per_minute: -0.5
     achievement_bonuses:
-      rate_6min: 50.0
-      rate_13min: 30.0
-      critical_6min_rate: 100.0
+      rate_6min: 20.0
+      rate_13min: 10.0
+      critical_6min_rate: 30.0
     failure_penalty_per_incident: -1.0
-    
-  # 従来の設定（後方互換性のため保持）
-  legacy:
-    # 各要素の重み
-    weights:
-      response_time: -1.0  # 応答時間ペナルティ
-      severity_bonus: 2.0  # 傷病度ボーナス係数
-      threshold_penalty: -10.0  # 閾値超過ペナルティ
-      coverage_preservation: 0.5  # カバレッジ維持報酬
-      
-    # ペナルティ設定
-    penalties:
-      over_6min: -5.0  # 6分超過基本ペナルティ
-      over_13min: -20.0  # 13分超過基本ペナルティ
-      per_minute_over: -1.0  # 1分あたり追加ペナルティ
 
 # ================================================================
-# ネットワーク構造（調整頻度：低）
+# ネットワーク構造（通常変更しない）
 # ================================================================
 network:
   # 状態エンコーダ
   state_encoder:
-    ambulance_features: 8  # ← 変更箇所：救急車特徴量次元
-    incident_features: 6  # ← 変更箇所：事案特徴量次元
-    spatial_features: 16  # ← 変更箇所：空間特徴量次元
-    temporal_features: 8  # ← 変更箇所：時間特徴量次元
-    
+    ambulance_features: 8
+    incident_features: 6
+    spatial_features: 16
+    temporal_features: 8
+  
   # Actor/Criticネットワーク
   actor:
-    hidden_layers: [256, 128, 64]  # ← 変更箇所：隠れ層構造
-    activation: "relu"  # "relu", "tanh", "gelu"
-    dropout: 0.1  # ← 変更箇所：ドロップアウト率
-    
-  critic:
-    hidden_layers: [256, 128]  # ← 変更箇所：隠れ層構造
+    hidden_layers: [256, 128]
     activation: "relu"
+    initialization: "xavier_uniform"
+    dropout: 0.1
+  
+  critic:
+    hidden_layers: [256, 128]
+    activation: "relu"
+    init_scale: 0.001
     dropout: 0.1
 
 # ================================================================
-# 学習管理（調整頻度：中）
+# 学習管理（通常変更しない）
 # ================================================================
 training:
-  # チェックポイント
-  checkpoint_interval: 100  # ← 変更箇所：保存間隔（エピソード）
-  keep_last_n: 5  # 保持する最新モデル数
+  checkpoint_interval: 250
+  keep_last_n: 5
   
-  # 早期終了
   early_stopping:
     enabled: true
-    patience: 500  # ← 変更箇所：改善なしエピソード数
-    min_delta: 0.001  # 最小改善幅
-    
-  # ログ設定
+    patience: 500
+    min_delta: 0.001
+  
   logging:
-    interval: 10  # ← 変更箇所：ログ出力間隔
+    interval: 10
     tensorboard: true
-    wandb: true  # Weights & Biases使用時はtrue
-    
+    wandb: true
+
 # ================================================================
-# 評価設定（調整頻度：中）
+# 評価設定デフォルト（個別設定で上書き）
 # ================================================================
 evaluation:
-  interval: 100  # ← 変更箇所：評価実行間隔（エピソード）
-  n_eval_episodes: 10  # ← 変更箇所：評価エピソード数
-  
-  # 評価指標
+  interval: 100
+  n_eval_episodes: 10
+  compare_baselines: ["closest"]
   metrics:
+    - "critical_6min_rate"
+    - "achieved_13min_rate"
     - "mean_response_time"
-    - "response_time_by_severity"
-    - "6min_achievement_rate"
-    - "13min_achievement_rate"
-    - "critical_6min_rate"  # 重症・重篤・死亡の6分達成率
-    
-  # ベースライン比較
-  compare_baselines:
-    - "closest"  # 直近隊運用
-    - "severity_based"  # ルールベース
-
+    - "vs_closest_improvement"
 
 # ================================================================
-# ハイブリッドモード設定（重症系直近隊、軽症系PPO）
+# オプション機能デフォルト（個別設定で制御）
 # ================================================================
+# 教師あり学習（デフォルト無効）
+teacher:
+  enabled: false
+  strategy: "closest"
+  initial_prob: 0.5
+  final_prob: 0.05
+  decay_episodes: 2500
+
+# カリキュラム学習（デフォルト無効）
+curriculum:
+  enabled: false
+  stages: []
+
+# ハイブリッドモード（デフォルト無効）
 hybrid_mode:
-  enabled: false  # デフォルトは無効（train_ppo.pyで上書き可能）
-  
-  # 傷病度分類
+  enabled: false
   severity_classification:
-    severe_conditions: ["重症", "重篤", "死亡"]  # 直近隊運用
-    mild_conditions: ["軽症", "中等症"]           # PPO学習対象
-  
-  # 報酬設計
+    severe_conditions: ["重症", "重篤", "死亡"]
+    mild_conditions: ["軽症", "中等症"]
   reward_weights:
-    response_time: 0.4      # A: 軽症系RT最小化（40%）
-    coverage: 0.5           # B: カバレッジ維持（50%）
-    workload_balance: 0.1   # C: 稼働バランス（10%）
-  
-  # 時間閾値（分）
+    response_time: 0.4
+    coverage: 0.5
+    workload_balance: 0.1
   time_thresholds:
-    good: 13       # 良好レベル
-    warning: 20    # 警告レベル（超過で重いペナルティ）
-  
-  # ペナルティ設定
+    good: 13
+    warning: 20
   penalties:
-    over_warning: -50.0  # 20分超過時のペナルティ
-    per_minute_over: -2.0  # 追加の分あたりペナルティ
-  
-  # カバレッジ評価
+    over_warning: -50.0
+    per_minute_over: -2.0
   coverage_evaluation:
-    high_risk_weight: 0.7  # 高リスク地域の重み
-    normal_weight: 0.3     # 通常地域の重み
-    min_acceptable: 0.6    # 最低許容カバレッジ率
+    high_risk_weight: 0.7
+    normal_weight: 0.3
+    min_acceptable: 0.6
