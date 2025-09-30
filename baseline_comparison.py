@@ -1,20 +1,6 @@
 """
 baseline_comparison.py
 複数ディスパッチ戦略の比較実験システム
-
-【設定変更ガイド】
-1. 戦略の追加・削除: EXPERIMENT_CONFIG の strategies リストを編集
-2. 戦略設定の変更: strategy_configs 辞書を編集
-3. 戦略ラベルの変更: strategy_labels 辞書を編集
-4. 色の変更: strategy_colors 辞書を編集
-
-【PPO戦略の使用方法】
-1. PPO戦略を含む比較実験を実行する場合:
-   - EXPERIMENT_CONFIG['strategies']で'ppo_agent'のコメントアウトを外す
-   - または、main_with_ppo()関数を呼び出す
-2. PPO戦略の設定:
-   - strategy_configs['ppo_agent']でmodel_pathとconfig_pathを指定
-   - 学習済みモデル(.pth)と設定ファイル(.yaml)のパスを正しく設定
 """
 
 # OpenMPエラーの回避（ライブラリ競合対策）
@@ -29,12 +15,11 @@ import seaborn as sns
 from typing import Dict, List
 from scipy import stats
 
-# ★★★ 変更点: wandbをインポート ★★★
 import wandb
 
-# ★★★ 修正: matplotlibバックエンドを非インタラクティブに設定 ★★★
+# matplotlibバックエンドを非インタラクティブに設定
 import matplotlib
-matplotlib.use('Agg')  # ファイル出力専用バックエンド
+matplotlib.use('Agg')
 
 # 日本語フォント設定
 plt.rcParams['font.family'] = 'Meiryo'
@@ -47,16 +32,16 @@ from dispatch_strategies import STRATEGY_CONFIGS
 from constants import SEVERITY_GROUPS
 
 # ============================================================
-# 【設定変更箇所1】実験設定
+# 実験設定
 # ============================================================
 EXPERIMENT_CONFIG = {
     # 比較する戦略のリスト（ここで戦略を追加・削除）
     'strategies': ['closest', 
                    #'severity_based',
                    #'advanced_severity',
-                   #'ppo_agent',
+                   'ppo_agent',
                    #'second_ride',
-                   'mexclp',
+                   #'mexclp',
                    ],
     
     # 各戦略の日本語表示名
@@ -79,36 +64,30 @@ EXPERIMENT_CONFIG = {
         'mexclp': '#e67e22'       # カロット
     },
     
-    # 各戦略の設定（STRATEGY_CONFIGSから選択またはカスタム設定）
+    # 各戦略の設定
     'strategy_configs': {
-        'closest': {},  # デフォルト設定
+        'closest': {},
         'severity_based': {
             'coverage_radius_km': 5.0,
-            'severe_conditions': SEVERITY_GROUPS['severe_conditions'],  # 統一された定数を使用
-            'mild_conditions': SEVERITY_GROUPS['mild_conditions'],      # 統一された定数を使用
-            
-            # ★★★ 新規追加: パラメータ設定 ★★★
-            'time_score_weight': 0.2,            # 応答時間の重みを20%に
-            'coverage_loss_weight': 0.8,         # カバレッジ損失の重みを80%に
-            'mild_time_limit_sec': 1080,         # 軽症の許容時間を18分(1080秒)に
-            'moderate_time_limit_sec': 900       # 中等症の許容時間を15分(900秒)に
+            'severe_conditions': SEVERITY_GROUPS['severe_conditions'],
+            'mild_conditions': SEVERITY_GROUPS['mild_conditions'],
+            'time_score_weight': 0.2,
+            'coverage_loss_weight': 0.8,
+            'mild_time_limit_sec': 1080,
+            'moderate_time_limit_sec': 900
         },
-        'advanced_severity': STRATEGY_CONFIGS['aggressive'],  # 推奨設定
-        # ← 以下を追加
+        'advanced_severity': STRATEGY_CONFIGS['aggressive'],
         'second_ride': {
-            'alternative_rank': 2,        # 2番目を選択
-            'enable_time_limit': False,   # 時間制限なし
-            'time_limit_seconds': 780     # 13分制限（使用しない）
+            'alternative_rank': 2,
+            'enable_time_limit': False,
+            'time_limit_seconds': 780
         },
-        'ppo_agent': {  # ★★★ PPO戦略の設定を追加 ★★★
-            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20250914_092430/final_model.pth',  # 学習済みモデルのパス
-            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20250914_092430/configs/config.yaml',  # 学習時のconfigファイルのパス
-            # ★★★ 地域制限の設定を明示的に指定 ★★★
-            # 'area_restriction': {
-            #     'enabled': False,
-            #     'area_name': '第一方面',
-            #     'section_code': 1,
-            #     'districts': ['千代田区', '中央区', '港区']
+        'ppo_agent': {
+            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20250920_212823/final_model.pth',
+            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20250920_212823/configs/config.yaml',
+            'hybrid_mode': True,
+            'severe_conditions': ['重症', '重篤', '死亡'],
+            'mild_conditions': ['軽症', '中等症']
         },
         'mexclp': {
             'busy_fraction': 0.1,
@@ -117,9 +96,8 @@ EXPERIMENT_CONFIG = {
         }
     }
 
-# ★★★ 変更点: レポートの辞書をフラット化するヘルパー関数を追加 ★★★
 def flatten_dict(d, parent_key='', sep='.'):
-    """ネストした辞書をフラットな辞書に変換する"""
+    """ネストした辞書をフラットな辞書に変換する（wandb用）"""
     items = []
     for k, v in d.items():
         new_key = parent_key + sep + k if parent_key else k
@@ -134,20 +112,9 @@ def run_comparison_experiment(
     duration_hours: int = 168,
     num_runs: int = 5,
     output_base_dir: str = 'data/tokyo/experiments',
-    # ★★★ 変更点: wandbのプロジェクト名を受け取る引数を追加 ★★★
     wandb_project: str = "ambulance-dispatch-simulation"
 ):
-    
-    # ★★★ 修正: wandbの初期設定 ★★★
-    try:
-        wandb.login()
-        print(f"wandbログイン成功: プロジェクト '{wandb_project}' に接続します")
-    except Exception as e:
-        print(f"警告: wandbログインに失敗しました。ローカルモードで実行します: {e}")
-        os.environ['WANDB_MODE'] = 'disabled'
     """
-    複数戦略の比較実験を実行 (wandb連携版)
-    
     Args:
         target_date: シミュレーション開始日（YYYYMMDD形式）
         duration_hours: シミュレーション期間（時間）
@@ -155,6 +122,13 @@ def run_comparison_experiment(
         output_base_dir: 結果出力ディレクトリ
         wandb_project: wandbのプロジェクト名
     """
+    # wandbの初期設定
+    try:
+        wandb.login()
+        print(f"wandbログイン成功: プロジェクト '{wandb_project}' に接続します")
+    except Exception as e:
+        print(f"警告: wandbログインに失敗しました。ローカルモードで実行します: {e}")
+        os.environ['WANDB_MODE'] = 'disabled'
     
     # validation_simulation.pyのrun_validation_simulation関数をインポート
     from validation_simulation import run_validation_simulation
@@ -181,16 +155,11 @@ def run_comparison_experiment(
         for run_idx in range(num_runs):
             print(f"  実行 {run_idx + 1}/{num_runs}...")
             
-            # ★★★ 変更点: 実行日時を取得して、wandbの実行名を生成 ★★★
             run_timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
             run_name = f"{strategy}-{run_timestamp}"
             
-            # ★★★ 修正: matplotlibの状態をリセット ★★★
-            plt.close('all')  # 全てのプロットを閉じる
+            plt.close('all')
             
-            # --- wandb連携のための設定 ---
-            
-            # ★★★ 変更点: wandbに渡すコンフィグ情報を作成 ★★★
             current_strategy_config = strategy_configs.get(strategy, {})
             config_for_wandb = {
                 "target_date": target_date,
@@ -202,15 +171,12 @@ def run_comparison_experiment(
                 **flatten_dict(current_strategy_config, parent_key='strategy_params')
             }
             
-            # ★★★ 修正: wandbの初期化と実行（withを使わない） ★★★
-            # 出力ディレクトリの設定（先に作っておく）
             output_dir = os.path.join(
                 output_base_dir,
                 f"{strategy}_{target_date}_{duration_hours}h_run{run_idx + 1}"
             )
             os.makedirs(output_dir, exist_ok=True)
 
-            # wandb初期化（必要な場合のみ）
             run = None
             if os.environ.get('WANDB_MODE') == 'disabled':
                 print(f"  - wandbが無効化されているため、ローカルモードで実行します")
@@ -229,7 +195,7 @@ def run_comparison_experiment(
                 except Exception as e:
                     print(f"  - wandb連携エラー(初期化): {e}")
                     run = None
-
+            
             # シミュレーション実行
             run_validation_simulation(
                 target_date_str=target_date,
@@ -241,7 +207,6 @@ def run_comparison_experiment(
                 strategy_config=current_strategy_config
             )
 
-            # 結果の読み込みとwandbへの記録
             report_path = os.path.join(output_dir, 'simulation_report.json')
             try:
                 with open(report_path, 'r', encoding='utf-8') as f:
@@ -289,12 +254,7 @@ def run_comparison_experiment(
     return analysis_results
 
 def analyze_results(results: Dict[str, List]) -> Dict:
-    """
-    実験結果を分析（複数戦略対応）
-    
-    Returns:
-        分析結果の辞書
-    """
+    """実験結果を分析"""
     analysis = {}
     
     for strategy in results.keys():
@@ -388,9 +348,7 @@ def analyze_results(results: Dict[str, List]) -> Dict:
     return analysis
 
 def visualize_comparison(analysis: Dict, output_dir: str):
-    """
-    比較結果の可視化（複数戦略対応）
-    """
+    """比較結果の可視化"""
     strategies = EXPERIMENT_CONFIG['strategies']
     strategy_labels = EXPERIMENT_CONFIG['strategy_labels']
     strategy_colors = EXPERIMENT_CONFIG['strategy_colors']
@@ -586,9 +544,7 @@ def create_improvement_comparison(analysis: Dict, strategies: List[str], strateg
                    f'{improvement:+.1f}%', ha='center', va='bottom')
 
 def create_summary_report(analysis: Dict, output_dir: str):
-    """
-    サマリーレポートの作成（複数戦略対応）
-    """
+    """サマリーレポートの作成"""
     report_path = os.path.join(output_dir, 'comparison_summary.txt')
     strategies = EXPERIMENT_CONFIG['strategies']
     strategy_labels = EXPERIMENT_CONFIG['strategy_labels']
@@ -660,184 +616,16 @@ def create_summary_report(analysis: Dict, output_dir: str):
     
     print(f"サマリーレポートを保存: {report_path}")
 
-# 様々な設定での実験例
-def run_second_ride_experiments():
-    """SecondRideStrategy の様々な設定での実験"""
-    
-    # 実験パラメータ
-    target_date = "20241201"
-    duration_hours = 168  # 1週間
-    num_runs = 3
-    
-    # 1. デフォルト設定での実験
-    print("=== SecondRideStrategy デフォルト設定での実験 ===")
-    EXPERIMENT_CONFIG['strategies'] = ['closest', 'second_ride']
-    EXPERIMENT_CONFIG['strategy_configs']['second_ride'] = {
-        'alternative_rank': 2,
-        'enable_time_limit': False,
-        'time_limit_seconds': 780
-    }
-    
-    results_default = run_comparison_experiment(
-        target_date=target_date,
-        duration_hours=duration_hours,
-        num_runs=num_runs,
-        output_base_dir='data/tokyo/experiments/second_ride_default',
-        wandb_project='second-ride-default'
-    )
-    
-    # 2. 時間制限ありでの実験
-    print("=== SecondRideStrategy 時間制限ありでの実験 ===")
-    EXPERIMENT_CONFIG['strategy_configs']['second_ride'] = {
-        'alternative_rank': 2,
-        'enable_time_limit': True,  # 時間制限あり
-        'time_limit_seconds': 780
-    }
-    
-    results_time_limited = run_comparison_experiment(
-        target_date=target_date,
-        duration_hours=duration_hours,
-        num_runs=num_runs,
-        output_base_dir='data/tokyo/experiments/second_ride_time_limited',
-        wandb_project='second-ride-time-limited'
-    )
-    
-    # 3. 3番目選択での実験
-    print("=== SecondRideStrategy 3番目選択での実験 ===")
-    EXPERIMENT_CONFIG['strategy_configs']['second_ride'] = {
-        'alternative_rank': 3,  # 3番目を選択
-        'enable_time_limit': False,
-        'time_limit_seconds': 780
-    }
-    
-    results_third_choice = run_comparison_experiment(
-        target_date=target_date,
-        duration_hours=duration_hours,
-        num_runs=num_runs,
-        output_base_dir='data/tokyo/experiments/second_ride_third_choice',
-        wandb_project='second-ride-third-choice'
-    )
-    
-    # 4. 全戦略比較実験
-    print("=== 全戦略比較実験 ===")
-    EXPERIMENT_CONFIG['strategies'] = ['closest', 'severity_based', 'second_ride']
-    EXPERIMENT_CONFIG['strategy_configs']['second_ride'] = {
-        'alternative_rank': 2,
-        'enable_time_limit': False,
-        'time_limit_seconds': 780
-    }
-    
-    results_comprehensive = run_comparison_experiment(
-        target_date=target_date,
-        duration_hours=duration_hours,
-        num_runs=num_runs,
-        output_base_dir='data/tokyo/experiments/comprehensive_comparison',
-        wandb_project='comprehensive-dispatch-comparison'
-    )
-    
-    return {
-        'default': results_default,
-        'time_limited': results_time_limited,
-        'third_choice': results_third_choice,
-        'comprehensive': results_comprehensive
-    }
-
-
-# validation_simulation.py での使用例
-def run_second_ride_validation():
-    """validation_simulation.py での SecondRideStrategy 使用例"""
-    
-    # validation_simulation.pyのrun_validation_simulation関数をインポート
-    from validation_simulation import run_validation_simulation
-    
-    # 基本的な使用
-    run_validation_simulation(
-        target_date_str="20241201",
-        output_dir="data/tokyo/simulation_results/second_ride_test",
-        simulation_duration_hours=24,
-        dispatch_strategy='second_ride',  # ← 戦略名を指定
-        strategy_config={
-            'alternative_rank': 2,
-            'enable_time_limit': False,
-            'time_limit_seconds': 780
-        }
-    )
-    
-    # 時間制限ありでの使用
-    run_validation_simulation(
-        target_date_str="20241201",
-        output_dir="data/tokyo/simulation_results/second_ride_time_limited",
-        simulation_duration_hours=24,
-        dispatch_strategy='second_ride',
-        strategy_config={
-            'alternative_rank': 2,
-            'enable_time_limit': True,   # 時間制限を有効化
-            'time_limit_seconds': 600    # 10分制限
-        }
-    )
-
-
-# 推奨実験シーケンス
-def recommended_experiment_sequence():
-    """推奨実験シーケンス"""
-    
-    # validation_simulation.pyのrun_validation_simulation関数をインポート
-    from validation_simulation import run_validation_simulation
-    
-    print("SecondRideStrategy 実験シーケンス開始")
-    
-    # Step 1: 短期間での動作確認
-    print("Step 1: 24時間での動作確認")
-    run_validation_simulation(
-        target_date_str="20241201",
-        output_dir="data/tokyo/simulation_results/second_ride_24h_test",
-        simulation_duration_hours=24,
-        dispatch_strategy='second_ride',
-        strategy_config={'alternative_rank': 2, 'enable_time_limit': False}
-    )
-    
-    # Step 2: ベースラインとの比較（1週間）
-    print("Step 2: ベースライン比較（1週間）")
-    EXPERIMENT_CONFIG['strategies'] = ['closest', 'second_ride']
-    EXPERIMENT_CONFIG['strategy_configs']['second_ride'] = {
-        'alternative_rank': 2,
-        'enable_time_limit': False
-    }
-    
-    run_comparison_experiment(
-        target_date="20241201",
-        duration_hours=168,
-        num_runs=3,
-        output_base_dir='data/tokyo/experiments/second_ride_vs_baseline',
-        wandb_project='second-ride-vs-baseline'
-    )
-    
-    # Step 3: パラメータ感度分析
-    print("Step 3: パラメータ感度分析")
-    for rank in [2, 3, 4]:
-        for time_limit in [False, True]:
-            config = {
-                'alternative_rank': rank,
-                'enable_time_limit': time_limit,
-                'time_limit_seconds': 780
-            }
-            
-            print(f"  実験: rank={rank}, time_limit={time_limit}")
-            # 実際の実験コードはここに...
-    
-    print("実験シーケンス完了")
-
 
 if __name__ == "__main__":
     # ============================================================
-    # 【設定変更箇所2】実験パラメータ
+    # 実験パラメータ
     # ============================================================
     EXPERIMENT_PARAMS = {
-        'target_date': "20240401",  # 開始日
-        'duration_hours': 720,       # 30日間
-        'num_runs': 5,              # 各戦略5回実行
+        'target_date': "20240801",
+        'duration_hours': 12,
+        'num_runs': 5,
         'output_base_dir': 'data/tokyo/experiments',
-        # ★★★ 変更点: wandbのプロジェクト名を指定 ★★★
         'wandb_project': 'ems-dispatch-optimization'
     }
     
@@ -851,43 +639,3 @@ if __name__ == "__main__":
     )
     
     print("\n実験完了！")
-
-    # # 推奨実験シーケンスを実行
-    # recommended_experiment_sequence()
-
-# ★★★【追加】PPO戦略の比較実験を実行する関数 ★★★
-def main_with_ppo():
-    """
-    PPO戦略を含む比較実験を実行する関数
-    使用方法: baseline_comparison.pyのEXPERIMENT_CONFIGで'ppo_agent'のコメントアウトを外してから実行
-    """
-    print("PPO戦略を含むベースライン戦略の性能評価を開始します。")
-    
-    # 実験パラメータ
-    EXPERIMENT_PARAMS = {
-        'target_date': '20240401',  # シミュレーション対象日
-        'duration_hours': 24,       # シミュレーション期間（時間）
-        'num_runs': 3,              # 各戦略の実行回数（PPOは重いので少なめ）
-        'output_base_dir': 'data/tokyo/experiments',
-        'wandb_project': 'ems-dispatch-optimization-with-ppo'
-    }
-    
-    # PPO戦略を有効にするために、一時的に戦略リストを変更
-    original_strategies = EXPERIMENT_CONFIG['strategies'].copy()
-    EXPERIMENT_CONFIG['strategies'] = ['closest', 'severity_based', 'ppo_agent']
-    
-    try:
-        # 実験実行
-        results = run_comparison_experiment(
-            target_date=EXPERIMENT_PARAMS['target_date'],
-            duration_hours=EXPERIMENT_PARAMS['duration_hours'],
-            num_runs=EXPERIMENT_PARAMS['num_runs'],
-            output_base_dir=EXPERIMENT_PARAMS['output_base_dir'],
-            wandb_project=EXPERIMENT_PARAMS['wandb_project']
-        )
-        
-        print("\nPPO戦略を含む実験完了！")
-        
-    finally:
-        # 元の設定に戻す
-        EXPERIMENT_CONFIG['strategies'] = original_strategies

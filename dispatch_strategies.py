@@ -774,211 +774,324 @@ class SecondRideStrategy(DispatchStrategy):
             'mild_conditions': self.mild_conditions
         }
 
-# PPOエージェントを戦略として使用する新しいクラス
+# PPOエージェントを戦略として使用する新しいクラス（改良版）
 class PPOStrategy(DispatchStrategy):
-    """学習済みPPOエージェントを使用する戦略"""
+    """学習済みPPOエージェントを使用する戦略（状態エンコーディング改良版）"""
     
     def __init__(self):
         super().__init__("ppo_agent", "reinforcement_learning")
         self.agent = None
         self.state_encoder = None
         self.config = None
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # ハイブリッドモード関連
+        self.hybrid_mode = False
+        self.severe_conditions = []
+        self.mild_conditions = []
+        
+        # 次元数とデータ
+        self.action_dim = None
+        self.state_dim = None
+        self.travel_time_matrix = None
+        self.grid_mapping = None
         
     def initialize(self, config: Dict):
-        """学習済みPPOエージェントをロードして初期化する"""
+        """PPOモデルと関連コンポーネントの初期化"""
         if not PPO_AVAILABLE:
             raise ImportError("PPOモジュールが利用できません。reinforcement_learningパッケージを確認してください。")
         
-        print("PPO戦略を初期化中...")
+        print("PPO戦略を初期化中（改良版）...")
         
+        # ハイブリッドモード設定
+        self.hybrid_mode = config.get('hybrid_mode', False)
+        if self.hybrid_mode:
+            self.severe_conditions = config.get('severe_conditions', ['重症', '重篤', '死亡'])
+            self.mild_conditions = config.get('mild_conditions', ['軽症', '中等症'])
+            print(f"  ハイブリッドモード有効: 重症系={self.severe_conditions}は直近隊")
+        
+        # モデルパスの取得と検証
         model_path = config.get('model_path')
+        if not model_path:
+            raise ValueError("PPOStrategy requires 'model_path' in config")
+        
+        from pathlib import Path
+        model_file = Path(model_path)
+        if not model_file.exists():
+            # 相対パスの可能性を考慮
+            alternative_paths = [
+                Path(f"reinforcement_learning/{model_path}"),
+                Path(f"../{model_path}")
+            ]
+            for alt_path in alternative_paths:
+                if alt_path.exists():
+                    model_file = alt_path
+                    break
+            else:
+                raise FileNotFoundError(f"Model file not found: {model_path}")
+        
+        print(f"  モデルファイル: {model_file}")
+        
+        # 設定の読み込み（チェックポイントまたはYAMLファイル）
+        checkpoint = torch.load(model_file, map_location=self.device)
+        saved_config = checkpoint.get('config', {})
+        
+        # config.yamlが指定されている場合はそちらを優先
         config_path = config.get('config_path')
-        if not model_path or not config_path:
-            raise ValueError("PPOStrategyには 'model_path' と 'config_path' が必要です。")
-        
-        # 設定ファイルの読み込み
-        try:
+        if config_path:
+            print(f"  設定ファイルから読み込み: {config_path}")
             with open(config_path, 'r', encoding='utf-8') as f:
-                self.config = yaml.safe_load(f)
-        except FileNotFoundError:
-            raise FileNotFoundError(f"設定ファイルが見つかりません: {config_path}")
-        except Exception as e:
-            raise ValueError(f"設定ファイルの読み込みに失敗しました: {e}")
+                saved_config = yaml.safe_load(f)
+        elif not saved_config:
+            # チェックポイントにもconfigがない場合、デフォルト設定を使用
+            print("  警告: 設定情報が見つかりません。デフォルト設定を使用します")
+            saved_config = self._create_default_config()
         
-        # StateEncoderの初期化に必要なデータを準備
-        data_paths_config = self.config.get('data_paths', {})
-        if not data_paths_config:
-            raise ValueError(f"config.yamlに'data_paths'セクションが見つかりません。ファイル: {config_path}")
+        self.config = saved_config
         
-        # グリッドマッピングの読み込み
-        grid_mapping_path = data_paths_config.get('grid_mapping')
-        if not grid_mapping_path:
-            raise ValueError("config.yamlに'grid_mapping'パスが見つかりません。")
+        # 次元数の決定（学習時の設定を優先）
+        if 'data' in saved_config:
+            area_config = saved_config['data'].get('area_restriction', {})
+            if area_config.get('enabled'):
+                self.action_dim = area_config.get('num_ambulances_in_area', 192)
+                self.state_dim = area_config.get('state_dim', None)
+            else:
+                self.action_dim = saved_config.get('state_prediction', {}).get('action_dim', 192)
+                self.state_dim = saved_config.get('state_prediction', {}).get('state_dim', None)
+        else:
+            self.action_dim = 192
+            self.state_dim = None
         
-        with open(grid_mapping_path, 'r', encoding='utf-8') as f:
-            grid_mapping = json.load(f)
+        print(f"  行動次元: {self.action_dim}")
+        
+        # データパスの取得
+        data_paths = saved_config.get('data_paths', {})
+        travel_time_path = Path(data_paths.get('travel_time_matrix', 'data/tokyo/calibration2/linear_calibrated_response.npy'))
+        grid_mapping_path = Path(data_paths.get('grid_mapping', 'data/tokyo/processed/grid_mapping_res9.json'))
         
         # 移動時間行列の読み込み
-        matrix_path = data_paths_config.get('travel_time_matrix')
-        if not matrix_path:
-            raise ValueError("config.yamlに'travel_time_matrix'パスが見つかりません。")
-        
-        travel_time_matrix = np.load(matrix_path)
-        
-        # ★★★ エリア制限の確認と次元数の設定（正しいパスから取得）★★★
-        data_config = self.config.get('data', {})
-        area_restriction = data_config.get('area_restriction', {})
-        if area_restriction.get('enabled', False):
-            # 設定ファイルで明示的に定義された次元数を使用
-            action_dim = area_restriction.get('action_dim', area_restriction.get('num_ambulances_in_area', 25))
-            state_dim = area_restriction.get('state_dim', None)
-            print(f"エリア制限有効: 行動次元={action_dim}, 状態次元={state_dim}")
+        if travel_time_path.exists():
+            self.travel_time_matrix = np.load(travel_time_path)
+            print(f"  移動時間行列読み込み完了: {self.travel_time_matrix.shape}")
         else:
-            action_dim = 192  # 全体
-            state_dim = None
+            print(f"  警告: 移動時間行列が見つかりません: {travel_time_path}")
         
-        # StateEncoderを初期化
+        # グリッドマッピングの読み込み
+        if grid_mapping_path.exists():
+            with open(grid_mapping_path, 'r') as f:
+                self.grid_mapping = json.load(f)
+            print(f"  グリッドマッピング読み込み完了: {len(self.grid_mapping)}グリッド")
+        else:
+            print(f"  警告: グリッドマッピングが見つかりません: {grid_mapping_path}")
+        
+        # StateEncoderの初期化
         self.state_encoder = StateEncoder(
-            config=self.config,
-            max_ambulances=action_dim,
-            travel_time_matrix=travel_time_matrix,
-            grid_mapping=grid_mapping
+            config=saved_config,
+            max_ambulances=self.action_dim,
+            travel_time_matrix=self.travel_time_matrix,
+            grid_mapping=self.grid_mapping
         )
         
-        # ★★★ 状態次元数の決定（設定ファイル優先）★★★
-        if state_dim is None:
-            state_dim = self.state_encoder.state_dim
-        else:
-            print(f"設定ファイルから状態次元数を取得: {state_dim}")
+        # 状態次元数の決定
+        if self.state_dim is None:
+            self.state_dim = self.state_encoder.state_dim
+        print(f"  状態次元: {self.state_dim}")
         
-        # PPOエージェントを初期化
-        ppo_config = self.config.get('ppo', {})
-        self.agent = PPOAgent(state_dim, action_dim, ppo_config)
-        self.agent.load(model_path)
-        self.agent.actor.eval()  # 評価モードに設定
+        # PPOエージェントの作成と読み込み
+        ppo_config = saved_config.get('ppo', {})
+        if not ppo_config:
+            print("  警告: PPO設定が見つかりません。デフォルト設定を使用します")
+            ppo_config = self._create_default_ppo_config()
         
-        print(f"PPOモデル '{model_path}' の読み込み完了。")
+        self.agent = PPOAgent(
+            state_dim=self.state_dim,
+            action_dim=self.action_dim,
+            config=ppo_config,
+            device=str(self.device)
+        )
+        self.agent.load(model_file)
+        self.agent.actor.eval()
+        self.agent.critic.eval()
+        
+        print(f"PPOモデルの読み込み完了 (hybrid={self.hybrid_mode})")
+    
+    def _create_default_config(self) -> Dict:
+        """デフォルト設定を作成"""
+        return {
+            'data_paths': {
+                'travel_time_matrix': 'data/tokyo/calibration2/linear_calibrated_response.npy',
+                'grid_mapping': 'data/tokyo/processed/grid_mapping_res9.json'
+            },
+            'state_prediction': {
+                'action_dim': 192,
+                'state_dim': 999
+            }
+        }
+    
+    def _create_default_ppo_config(self) -> Dict:
+        """デフォルトPPO設定を作成"""
+        return {
+            'learning_rate': {
+                'actor': 3e-4,
+                'critic': 1e-3
+            },
+            'clip_epsilon': 0.2,
+            'gamma': 0.99,
+            'gae_lambda': 0.95,
+            'n_epochs': 10,
+            'batch_size': 64,
+            'entropy_coef': 0.01,
+            'network': {
+                'hidden_dims': [256, 256]
+            }
+        }
     
     def select_ambulance(self,
                         request: EmergencyRequest,
                         available_ambulances: List[AmbulanceInfo],
                         travel_time_func: callable,
                         context: DispatchContext) -> Optional[AmbulanceInfo]:
-        """シミュレータの状態からPPOエージェントが最適な救急車を選択する"""
+        """救急車選択ロジック（ハイブリッドモード対応）"""
         if not available_ambulances:
             return None
         
+        # ハイブリッドモード：重症度で分岐
+        if self.hybrid_mode and request.severity in self.severe_conditions:
+            return self._select_closest(request, available_ambulances, travel_time_func)
+        
+        # 軽症系またはハイブリッドでない場合 → PPO選択
+        return self._select_with_ppo(request, available_ambulances, travel_time_func, context)
+    
+    def _select_closest(self, request, available_ambulances, travel_time_func):
+        """直近隊選択（重症系用）"""
+        best_ambulance = None
+        min_time = float('inf')
+        
+        for amb_info in available_ambulances:
+            travel_time = travel_time_func(amb_info.current_h3, request.h3_index, 'response')
+            if travel_time < min_time:
+                min_time = travel_time
+                best_ambulance = amb_info
+        
+        return best_ambulance
+    
+    def _select_with_ppo(self, request, available_ambulances, travel_time_func, context):
+        """PPOモデルによる選択（学習時と同じ状態エンコーディング）"""
         if self.agent is None or self.state_encoder is None:
-            print("警告: PPOエージェントが初期化されていません。フォールバックします。")
-            return self._fallback_selection(request, available_ambulances, travel_time_func)
+            print("警告: PPOエージェント未初期化、フォールバック")
+            return self._select_closest(request, available_ambulances, travel_time_func)
         
         try:
-            # 1. シミュレータの状態を、RL環境が理解できる形式 (state_dict) に変換
-            state_dict = {
-                'ambulances': self._get_ambulance_states(context),
-                'pending_call': {
-                    'h3_index': request.h3_index,
-                    'severity': request.severity
-                },
-                'episode_step': context.current_time,
-                'time_of_day': context.hour_of_day
-            }
+            # 1. ValidationSimulatorの状態を学習環境形式に変換
+            state_dict = self._build_state_dict(request, available_ambulances, context)
             
-            # 2. state_dictを状態ベクトルにエンコード
+            # 2. StateEncoderで状態ベクトルに変換
             state_vector = self.state_encoder.encode_state(state_dict)
             
-            # 3. 利用可能な救急車のマスクを作成
-            action_dim = self.state_encoder.max_ambulances
-            action_mask = np.zeros(action_dim, dtype=bool)
+            # 3. 行動マスクの作成
+            action_mask = self._create_action_mask(available_ambulances)
             
-            # available_ambulancesのIDを整数インデックスにマッピング
-            available_indices = []
-            for amb_info in available_ambulances:
-                try:
-                    # 'AMB_1' -> 1
-                    amb_idx = int(amb_info.id.split('_')[-1])
-                    if amb_idx < action_dim:
-                        action_mask[amb_idx] = True
-                        available_indices.append(amb_idx)
-                except (ValueError, IndexError):
-                    continue
-            
-            # 利用可能な隊がいない場合は最近接を返す（フォールバック）
-            if not available_indices:
-                return self._fallback_selection(request, available_ambulances, travel_time_func)
-            
-            # 4. PPOエージェントに行動を選択させる (決定的モード)
+            # 4. PPOエージェントで行動選択
             with torch.no_grad():
-                selected_action_idx, _, _ = self.agent.select_action(
+                action, _, _ = self.agent.select_action(
                     state_vector,
                     action_mask,
                     deterministic=True
                 )
             
-            # 5. 選択された行動インデックスをAmbulanceInfoオブジェクトに変換
-            for amb_info in available_ambulances:
-                try:
-                    amb_idx = int(amb_info.id.split('_')[-1])
-                    if amb_idx == selected_action_idx:
-                        return amb_info
-                except (ValueError, IndexError):
-                    continue
+            # 5. 選択された行動を救急車にマッピング
+            selected_amb = self._map_action_to_ambulance(action, available_ambulances)
             
-            # もし選択された救急車が利用不可能なリストにいた場合（稀なケース）、
-            # 利用可能な中から最近接を返す（安全のためのフォールバック）
-            print(f"警告: PPOが選択した救急車 {selected_action_idx} は利用不可能でした。フォールバックします。")
-            return self._fallback_selection(request, available_ambulances, travel_time_func)
-            
-        except Exception as e:
-            print(f"PPO戦略でエラーが発生しました: {e}")
-            return self._fallback_selection(request, available_ambulances, travel_time_func)
-    
-    def _get_ambulance_states(self, context: DispatchContext) -> Dict:
-        """コンテキストから救急車の状態を取得"""
-        states = {}
-        for amb_id_str, amb_obj in context.all_ambulances.items():
-            try:
-                # 救急車IDを整数インデックスに変換
-                if isinstance(amb_id_str, str) and '_' in amb_id_str:
-                    # 'AMB_1' -> 1
-                    amb_idx = int(amb_id_str.split('_')[-1])
-                else:
-                    # 数値の場合はそのまま使用
-                    amb_idx = int(amb_id_str)
+            if selected_amb:
+                return selected_amb
+            else:
+                print(f"警告: Action {action} マッピング失敗、フォールバック")
+                return self._select_closest(request, available_ambulances, travel_time_func)
                 
-                # 救急車の状態情報を取得
-                states[amb_idx] = {
-                    'id': getattr(amb_obj, 'id', amb_id_str),
-                    'station_h3': getattr(amb_obj, 'station_h3_index', getattr(amb_obj, 'station_h3', '')),
-                    'current_h3': getattr(amb_obj, 'current_h3_index', getattr(amb_obj, 'current_h3', '')),
-                    'status': self._get_status_string(amb_obj),
-                    'calls_today': getattr(amb_obj, 'num_calls_handled', getattr(amb_obj, 'calls_today', 0)),
-                }
-            except (ValueError, IndexError, AttributeError) as e:
-                print(f"警告: 救急車 {amb_id_str} の状態取得に失敗: {e}")
-                continue
-        return states
+        except Exception as e:
+            print(f"PPO選択エラー: {e}")
+            import traceback
+            traceback.print_exc()
+            return self._select_closest(request, available_ambulances, travel_time_func)
     
-    def _get_status_string(self, amb_obj) -> str:
-        """救急車の状態を文字列で取得"""
-        status = getattr(amb_obj, 'status', None)
-        if status is None:
-            return 'unknown'
+    def _build_state_dict(self, request, available_ambulances, context):
+        """ValidationSimulatorの状態を学習環境形式に変換"""
+        ambulances = {}
         
-        if hasattr(status, 'name'):
-            return status.name.lower()
-        elif hasattr(status, 'value'):
-            return status.value.lower()
-        else:
-            return str(status).lower()
+        # 全救急車情報を取得
+        for amb_id, amb_obj in context.all_ambulances.items():
+            try:
+                # IDを整数に変換
+                if isinstance(amb_id, str) and '_' in amb_id:
+                    idx = int(amb_id.split('_')[-1])
+                else:
+                    idx = int(amb_id)
+                
+                # 状態の取得
+                ambulances[idx] = {
+                    'current_h3': amb_obj.current_h3_index,
+                    'status': 'available' if amb_obj.status.value == 'available' and not amb_obj.is_on_break else 'busy',
+                    'calls_today': amb_obj.num_calls_handled,
+                    'station_h3': amb_obj.station_h3_index
+                }
+            except (ValueError, AttributeError):
+                continue
+        
+        # 事案情報
+        pending_call = {
+            'h3_index': request.h3_index,
+            'severity': request.severity,
+            'wait_time': 0,
+            'priority': request.priority.value if hasattr(request.priority, 'value') else 0.5
+        }
+        
+        # 時間情報
+        episode_step = int(context.current_time / 60) if context.current_time else 0
+        time_of_day = context.hour_of_day if context.hour_of_day is not None else 12
+        
+        return {
+            'ambulances': ambulances,
+            'pending_call': pending_call,
+            'episode_step': episode_step,
+            'time_of_day': time_of_day
+        }
     
-    def _fallback_selection(self, request: EmergencyRequest, available_ambulances: List[AmbulanceInfo], 
-                           travel_time_func: callable) -> Optional[AmbulanceInfo]:
-        """フォールバック用の最近接選択"""
-        if not available_ambulances:
-            return None
-        return min(available_ambulances, 
-                   key=lambda amb: travel_time_func(amb.current_h3, request.h3_index, 'response'))
+    def _create_action_mask(self, available_ambulances):
+        """利用可能な救急車のマスクを作成"""
+        mask = np.zeros(self.action_dim, dtype=bool)
+        
+        for amb_info in available_ambulances:
+            try:
+                if '_' in amb_info.id:
+                    idx = int(amb_info.id.split('_')[-1])
+                else:
+                    idx = int(amb_info.id)
+                
+                if 0 <= idx < self.action_dim:
+                    mask[idx] = True
+            except (ValueError, AttributeError):
+                continue
+        
+        if not mask.any():
+            print("警告: マスク内に利用可能な救急車がありません")
+        
+        return mask
+    
+    def _map_action_to_ambulance(self, action: int, available_ambulances):
+        """選択された行動インデックスを救急車オブジェクトにマッピング"""
+        for amb_info in available_ambulances:
+            try:
+                if '_' in amb_info.id:
+                    idx = int(amb_info.id.split('_')[-1])
+                else:
+                    idx = int(amb_info.id)
+                
+                if idx == action:
+                    return amb_info
+            except (ValueError, AttributeError):
+                continue
+        
+        return None
 
 
 # ============== MEXCLP戦略の実装 ==============
