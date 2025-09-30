@@ -8,7 +8,7 @@
 # 実験基本設定（デフォルト値）
 # ================================================================
 experiment:
-  name: "ppo_dispatch_optimization"
+  name: "ems_ppo"
   description: "救急車配車最適化"
   seed: 42
   device: "cuda"  # "cpu" or "cuda"

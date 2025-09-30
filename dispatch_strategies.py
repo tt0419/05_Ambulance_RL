@@ -19,6 +19,9 @@ import torch
 import sys
 import os
 
+# データキャッシュのインポート
+from data_cache import get_emergency_data_cache
+
 # 統一された傷病度定数をインポート
 from constants import (
     SEVERITY_GROUPS, SEVERITY_PRIORITY, SEVERITY_TIME_LIMITS,
@@ -977,6 +980,288 @@ class PPOStrategy(DispatchStrategy):
         return min(available_ambulances, 
                    key=lambda amb: travel_time_func(amb.current_h3, request.h3_index, 'response'))
 
+
+# ============== MEXCLP戦略の実装 ==============
+
+class DemandDistributionCalculator:
+    """過去の救急事案データから需要分布を計算するヘルパークラス"""
+    
+    def __init__(self, grid_mapping: Dict):
+        self.grid_mapping = grid_mapping
+        self.demand_distribution = None  # キャッシュ用
+        
+    def get_demand_distribution(self) -> Dict[str, float]:
+        """需要分布を取得（キャッシュ済みならそれを返す）"""
+        if self.demand_distribution is None:
+            self.demand_distribution = self._calculate_demand_distribution()
+        return self.demand_distribution
+    
+    def _calculate_demand_distribution(self) -> Dict[str, float]:
+        """実際の需要分布計算
+        
+        validation_simulation.pyと同じ方法でh3インデックスを取得
+        """
+        import time
+        import pandas as pd
+        start_time = time.time()
+        
+        # データキャッシュから全データを取得
+        data_cache = get_emergency_data_cache()
+        calls_df = data_cache.load_data()
+        
+        print(f"需要分布計算開始: {len(calls_df)}件の事案データから計算")
+        
+        # validation_simulation.pyと同じ方法でh3インデックスを計算
+        # Y_CODE（緯度）、X_CODE（経度）からh3インデックスを生成
+        h3_counts = {}
+        total_calls = 0
+        invalid_coords = 0
+        out_of_grid = 0
+        
+        for _, call in calls_df.iterrows():
+            try:
+                # 座標データの確認
+                if pd.notna(call.get('Y_CODE')) and pd.notna(call.get('X_CODE')):
+                    lat = float(call['Y_CODE'])
+                    lng = float(call['X_CODE'])
+                    
+                    # h3インデックスを生成（validation_simulation.pyと同じ解像度9）
+                    h3_idx = h3.latlng_to_cell(lat, lng, 9)
+                    
+                    # グリッドマッピングに含まれているか確認
+                    if h3_idx in self.grid_mapping:
+                        h3_counts[h3_idx] = h3_counts.get(h3_idx, 0) + 1
+                        total_calls += 1
+                    else:
+                        out_of_grid += 1
+                else:
+                    invalid_coords += 1
+                    
+            except (ValueError, TypeError, KeyError) as e:
+                invalid_coords += 1
+                continue
+        
+        if total_calls == 0:
+            raise ValueError("需要分布計算エラー: 有効な事案データが見つかりません")
+        
+        # 需要割合に変換（全グリッドに対して計算）
+        demand_distribution = {}
+        for h3_idx in self.grid_mapping.keys():
+            count = h3_counts.get(h3_idx, 0)
+            demand_distribution[h3_idx] = count / total_calls
+        
+        elapsed_time = time.time() - start_time
+        
+        print(f"需要分布計算完了:")
+        print(f"  処理時間: {elapsed_time:.2f}秒")
+        print(f"  有効事案数: {total_calls}件")
+        print(f"  無効座標: {invalid_coords}件")
+        print(f"  グリッド外: {out_of_grid}件")
+        print(f"  需要があるグリッド数: {len(h3_counts)}/{len(self.grid_mapping)}")
+        print(f"  最大需要グリッド: {max(demand_distribution.values()):.4f}")
+        
+        return demand_distribution
+
+
+class MEXCLPStrategy(DispatchStrategy):
+    """Dynamic MEXCLP戦略の実装（最適化版）
+    
+    Jagtenberg et al. (2017) に基づく実装
+    パフォーマンス最適化：需要の累積90%をカバーする主要グリッドのみで計算
+    """
+    
+    def __init__(self):
+        super().__init__("mexclp", "optimization_based")
+        # デフォルトパラメータ
+        self.busy_fraction = 0.3
+        self.time_threshold_seconds = 780
+        self.demand_calculator = None
+        self.travel_time_matrix = None
+        self.grid_mapping = None
+        
+        # パフォーマンス最適化用
+        self.significant_demand_grids = None  # 需要の高い主要グリッド
+        self.coverage_cache = {}  # カバレッジ計算のキャッシュ
+        self.cumulative_threshold = 0.9  # 累積需要の90%をカバー
+        
+    def initialize(self, config: Dict):
+        """戦略の初期化"""
+        self.config = config
+        self.busy_fraction = config.get('busy_fraction', 0.3)
+        self.time_threshold_seconds = config.get('time_threshold', 780) # 13分
+        self.cumulative_threshold = config.get('cumulative_threshold', 0.9)
+        
+        print(f"MEXCLPStrategy初期化開始...")
+        
+        # グリッドマッピングの読み込み
+        try:
+            with open('data/tokyo/processed/grid_mapping_res9.json', 'r', encoding='utf-8') as f:
+                self.grid_mapping = json.load(f)
+            print(f"  グリッドマッピング読み込み成功: {len(self.grid_mapping)}グリッド")
+        except Exception as e:
+            raise RuntimeError(f"グリッドマッピングの読み込みエラー: {e}")
+        
+        # 移動時間行列の読み込み
+        try:
+            import numpy as np
+            matrix_path = 'data/tokyo/calibration2/log_calibrated_response.npy'
+            self.travel_time_matrix = np.load(matrix_path)
+            print(f"  移動時間行列読み込み成功: shape={self.travel_time_matrix.shape}")
+        except Exception as e:
+            raise RuntimeError(f"移動時間行列の読み込みエラー: {e}")
+        
+        # 需要分布計算器の初期化
+        try:
+            self.demand_calculator = DemandDistributionCalculator(self.grid_mapping)
+            print(f"  需要分布計算器初期化成功")
+            
+            # 主要需要グリッドの事前計算
+            self._precompute_significant_grids()
+            
+        except Exception as e:
+            raise RuntimeError(f"需要分布計算器の初期化エラー: {e}")
+        
+        print(f"MEXCLPStrategy初期化完了:")
+        print(f"  busy_fraction: {self.busy_fraction}")
+        print(f"  time_threshold: {self.time_threshold_seconds}秒")
+        print(f"  計算対象グリッド数: {len(self.significant_demand_grids)}/{len(self.grid_mapping)}")
+    
+    def _precompute_significant_grids(self):
+        """需要の累積X%をカバーする主要グリッドを事前計算"""
+        demand_distribution = self.demand_calculator.get_demand_distribution()
+        
+        # 需要の高い順にソート
+        sorted_demands = sorted(demand_distribution.items(), 
+                              key=lambda x: x[1], reverse=True)
+        
+        # 累積需要がthresholdを超えるまでのグリッドを選択
+        cumulative_demand = 0.0
+        self.significant_demand_grids = []
+        
+        for h3_idx, demand in sorted_demands:
+            if demand == 0:
+                break
+            self.significant_demand_grids.append((h3_idx, demand))
+            cumulative_demand += demand
+            if cumulative_demand >= self.cumulative_threshold:
+                break
+        
+        print(f"  主要需要グリッド: {len(self.significant_demand_grids)}個")
+        print(f"  カバー需要割合: {cumulative_demand:.2%}")
+    
+    def select_ambulance(self, request: EmergencyRequest,
+                        available_ambulances: List[AmbulanceInfo],
+                        travel_time_func: callable,
+                        context: DispatchContext) -> Optional[AmbulanceInfo]:
+        """MEXCLPアルゴリズムによる救急車選択（最適化版）"""
+        
+        if not available_ambulances:
+            return None
+        
+        # 初期化チェック
+        if not self.grid_mapping or self.travel_time_matrix is None:
+            raise RuntimeError("MEXCLPStrategy: 初期化が完了していません")
+        
+        # キャッシュのクリア（毎回の配車で状況が変わるため）
+        self.coverage_cache.clear()
+        
+        # Step 1: 閾値時間内到着可能な救急車を分類
+        within_threshold = []
+        beyond_threshold = []
+        
+        for ambulance in available_ambulances:
+            travel_time = travel_time_func(ambulance.current_h3, request.h3_index, 'response')
+            if travel_time <= self.time_threshold_seconds:
+                within_threshold.append(ambulance)
+            else:
+                beyond_threshold.append(ambulance)
+        
+        candidates = within_threshold if within_threshold else beyond_threshold
+        
+        # Step 2: 高速化されたカバレッジ評価
+        import time
+        calc_start = time.time()
+        
+        best_ambulance = None
+        max_remaining_coverage = -float('inf')
+        
+        # バッチ処理用のデータ準備
+        remaining_lists = []
+        for candidate in candidates:
+            remaining = [a for a in available_ambulances if a.id != candidate.id]
+            remaining_lists.append((candidate, remaining))
+        
+        # 各候補の残存カバレッジを計算
+        for candidate, remaining in remaining_lists:
+            coverage = self._calculate_remaining_coverage_optimized(remaining)
+            
+            if coverage > max_remaining_coverage:
+                max_remaining_coverage = coverage
+                best_ambulance = candidate
+        
+        calc_time = time.time() - calc_start
+        
+        if calc_time > 0.5:  # 0.5秒以上かかった場合のみログ出力
+            print(f"MEXCLP: {len(candidates)}台の評価に{calc_time:.3f}秒")
+        
+        return best_ambulance
+    
+    def _calculate_remaining_coverage_optimized(self, 
+                                               remaining: List[AmbulanceInfo]) -> float:
+        """最適化された残存カバレッジ計算
+        
+        最適化手法：
+        1. 主要需要グリッドのみで計算
+        2. numpy配列演算の活用
+        3. キャッシングの活用
+        """
+        
+        # 残存車両の位置をキーとしたキャッシュ
+        cache_key = tuple(sorted(a.id for a in remaining))
+        if cache_key in self.coverage_cache:
+            return self.coverage_cache[cache_key]
+        
+        import numpy as np
+        
+        # 残存車両のグリッドインデックスを事前計算
+        remaining_indices = []
+        for amb in remaining:
+            if amb.current_h3 in self.grid_mapping:
+                remaining_indices.append(self.grid_mapping[amb.current_h3])
+        
+        if not remaining_indices:
+            return 0.0
+        
+        remaining_indices = np.array(remaining_indices)
+        
+        total_coverage = 0.0
+        
+        # 主要需要グリッドのみで計算
+        for demand_h3, demand_fraction in self.significant_demand_grids:
+            if demand_h3 not in self.grid_mapping:
+                continue
+                
+            demand_idx = self.grid_mapping[demand_h3]
+            
+            # numpy配列演算で一括計算
+            # 各救急車から需要点への移動時間を取得
+            travel_times = self.travel_time_matrix[remaining_indices, demand_idx]
+            
+            # 閾値時間内にカバーできる救急車数
+            k = np.sum(travel_times <= self.time_threshold_seconds)
+            
+            if k > 0:
+                # MEXCLPカバレッジ公式
+                coverage = demand_fraction * (1 - self.busy_fraction ** k)
+                total_coverage += coverage
+        
+        # キャッシュに保存
+        self.coverage_cache[cache_key] = total_coverage
+        
+        return total_coverage
+
+# ============== MEXCLP戦略の実装終了 ==============
+
 class StrategyFactory:
     """戦略の動的生成を行うファクトリークラス"""
     
@@ -985,7 +1270,8 @@ class StrategyFactory:
         'severity_based': SeverityBasedStrategy,
         'advanced_severity': AdvancedSeverityStrategy,
         'ppo_agent': PPOStrategy,
-        'second_ride': SecondRideStrategy,  # ← この行を追加
+        'second_ride': SecondRideStrategy,
+        'mexclp': MEXCLPStrategy,  # ← MEXCLP戦略を追加
     }
     
     @classmethod

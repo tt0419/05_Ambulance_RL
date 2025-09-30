@@ -10,8 +10,8 @@ inherits: ./config.yaml
 # 実験識別
 # ================================================================
 experiment:
-  name: "ppo_tokyo23_simple_reward_v1"
-  description: "東京23区全域・シンプル報酬設計による学習"
+  name: "ppo_tokyo23_continuous_v1"
+  description: "シンプルなPPOで報酬設計を探索-continuousモード"
   seed: 2025
 
 # ================================================================
@@ -64,7 +64,7 @@ reward_mode:
   # ----------------------------------------
   # 使用する報酬モードを選択（1つだけ有効化）
   # ----------------------------------------
-  mode: "simple"  # "simple", "continuous", "discrete", "hybrid"
+  mode: "continuous"  # "simple", "continuous", "discrete", "hybrid"
   
   # ----------------------------------------
   # Simple Mode: 時間ペナルティベース

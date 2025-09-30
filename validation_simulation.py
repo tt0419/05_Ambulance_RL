@@ -935,9 +935,9 @@ class ValidationSimulator:
                     )
                     heapq.heappush(self.event_queue, available_event)
                     
-                    if self.verbose_logging:
-                        print(f"    - 救急車 {amb.id}: 初期ステータスを {amb.status.value} (利用不能) に設定。")
-                        print(f"      {available_event_time/60:.1f}分後 ({available_event_time:.0f}秒後) に利用可能になるイベントを投入。")
+                    # if self.verbose_logging:
+                    #     print(f"    - 救急車 {amb.id}: 初期ステータスを {amb.status.value} (利用不能) に設定。")
+                    #     print(f"      {available_event_time/60:.1f}分後 ({available_event_time:.0f}秒後) に利用可能になるイベントを投入。")
             else:
                 print("  初期利用不能として設定する救急車はありません。")
         else:

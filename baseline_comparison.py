@@ -52,10 +52,11 @@ from constants import SEVERITY_GROUPS
 EXPERIMENT_CONFIG = {
     # 比較する戦略のリスト（ここで戦略を追加・削除）
     'strategies': ['closest', 
-                   'severity_based',
+                   #'severity_based',
                    #'advanced_severity',
-                   'ppo_agent',
+                   #'ppo_agent',
                    #'second_ride',
+                   'mexclp',
                    ],
     
     # 各戦略の日本語表示名
@@ -64,7 +65,8 @@ EXPERIMENT_CONFIG = {
         'severity_based': '傷病度考慮運用',
         'advanced_severity': '高度傷病度考慮運用',
         'second_ride': '2番目選択運用',  
-        'ppo_agent': 'PPOエージェント運用' 
+        'ppo_agent': 'PPOエージェント運用' ,
+        'mexclp': 'MEXCLP運用'
     },
     
     # 各戦略の色設定
@@ -73,7 +75,8 @@ EXPERIMENT_CONFIG = {
         'severity_based': '#e74c3c',  # 赤
         'advanced_severity': '#2ecc71', # 緑
         'second_ride': '#f39c12',    # オレンジ 
-        'ppo_agent': '#9b59b6'       # 紫 
+        'ppo_agent': '#9b59b6',       # 紫 
+        'mexclp': '#e67e22'       # カロット
     },
     
     # 各戦略の設定（STRATEGY_CONFIGSから選択またはカスタム設定）
@@ -106,7 +109,11 @@ EXPERIMENT_CONFIG = {
             #     'area_name': '第一方面',
             #     'section_code': 1,
             #     'districts': ['千代田区', '中央区', '港区']
-            }
+        },
+        'mexclp': {
+            'busy_fraction': 0.1,
+            'time_threshold_seconds': 780
+        }
         }
     }
 
@@ -419,9 +426,9 @@ def visualize_comparison(analysis: Dict, output_dir: str):
     ax.grid(True, alpha=0.3)
     
     # 数値表示
-    for i, (mean, std) in enumerate(zip(means, stds)):
-        ax.text(i, mean + std + 0.1, f'{mean:.2f}±{std:.2f}', 
-                ha='center', va='bottom', fontsize=10)
+    # for i, (mean, std) in enumerate(zip(means, stds)):
+    #     ax.text(i, mean + std + 0.1, f'{mean:.2f}±{std:.2f}', 
+    #             ha='center', va='bottom', fontsize=10)
     
     # 2. 重症系の平均応答時間
     ax = axes[1]
@@ -458,7 +465,7 @@ def visualize_comparison(analysis: Dict, output_dir: str):
     ax.set_ylabel('達成率（%）')
     ax.set_title('6分以内達成率（全体）')
     ax.set_ylim(0, 100)
-    ax.axhline(y=90, color='red', linestyle='--', alpha=0.5, label='目標90%')
+    #ax.axhline(y=90, color='red', linestyle='--', alpha=0.5, label='目標90%')
     ax.legend()
     ax.grid(True, alpha=0.3)
     
