@@ -18,12 +18,18 @@ data_paths:
 
 experiment:
   name: "hybrid_ppo_tokyo23_v1"
-  description: "0918184111ベースに、8月で1週間をduration"
+  description: "0918184111ベースに、8月duration=24,max_steps=3000でお試し"
   seed: 2025
   device: cuda
 
 # -------------------------------------------------------------------
-# ハイブリッドモード設定
+# 報酬モード設定（reward_mode.modeで報酬計算モードを指定）
+# -------------------------------------------------------------------
+reward_mode:
+  mode: hybrid  # hybridモードを使用
+
+# -------------------------------------------------------------------
+# ハイブリッドモード設定（ems_environment用）
 # -------------------------------------------------------------------
 hybrid_mode:
   enabled: true
@@ -32,28 +38,6 @@ hybrid_mode:
   severity_classification:
     severe_conditions: ["重症", "重篤", "死亡"]  # 直近隊運用（学習対象外）
     mild_conditions: ["軽症", "中等症"]           # PPO学習対象
-  
-  # 報酬バランス（A:40%, B:50%, C:10%）
-  reward_weights:
-    response_time: 0.4      # A: 軽症系RT最小化
-    coverage: 0.5           # B: カバレッジ維持（重症系への準備）
-    workload_balance: 0.1   # C: 稼働バランス
-  
-  # 時間閾値（分）
-  time_thresholds:
-    good: 13       # 良好レベル
-    warning: 20    # 警告レベル（超過で重いペナルティ）
-  
-  # ペナルティ設定
-  penalties:
-    over_warning: -50.0   # 20分超過時の重いペナルティ
-    per_minute_over: -2.0  # 追加の分あたりペナルティ
-  
-  # カバレッジ評価
-  coverage_evaluation:
-    high_risk_weight: 0.7  # 高リスク地域（重症系多発地域）の重み
-    normal_weight: 0.3     # 通常地域の重み
-    min_acceptable: 0.6    # 最低許容カバレッジ率
 
 # -------------------------------------------------------------------
 # データ設定 (config_tokyo23.yamlから継承)
@@ -73,8 +57,9 @@ data:
     num_ambulances_in_area: 192
     state_dim: 999  # ハイブリッドモードでも同じ状態空間
     action_dim: 192
-  
-  episode_duration_hours: 168
+
+  max_steps_per_episode: 3000  
+  episode_duration_hours: 24
   
   # 学習期間（軽症系が多い期間と繁忙期の両方を含む）
   train_periods:
@@ -91,7 +76,7 @@ data:
 # PPOハイパーパラメータ (軽症系学習に最適化)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 10000  # 重症系をスキップするため、エピソード数を削減可能
+  n_episodes: 5000  # 重症系をスキップするため、エピソード数を削減可能
   batch_size: 1024
   
   # 学習率（config_tokyo23.yamlの設定を基本的に継承）
@@ -121,6 +106,9 @@ reward:
   # コア報酬設定（ハイブリッドモード用）
   core:
     mode: "hybrid"  # ハイブリッドモードを使用
+    
+    # カバレッジ影響重み（重要！）
+    coverage_impact_weight: 0.5  # カバレッジを報酬に反映（元の設計）
     
     # 軽症系用のシンプルな報酬パラメータ
     hybrid_params:

@@ -1197,12 +1197,22 @@ class MEXCLPStrategy(DispatchStrategy):
         self.coverage_cache = {}  # カバレッジ計算のキャッシュ
         self.cumulative_threshold = 0.9  # 累積需要の90%をカバー
         
+        # デバッグ設定
+        self.debug_mode = False  # デバッグモードのON/OFF
+        self.debug_threshold = 10  # 利用可能救急車がこの台数以下でデバッグ出力
+        
     def initialize(self, config: Dict):
         """戦略の初期化"""
         self.config = config
         self.busy_fraction = config.get('busy_fraction', 0.3)
-        self.time_threshold_seconds = config.get('time_threshold', 780) # 13分
+        # time_threshold_secondsとtime_thresholdの両方に対応（後方互換性）
+        self.time_threshold_seconds = config.get('time_threshold_seconds', 
+                                                  config.get('time_threshold', 780))
         self.cumulative_threshold = config.get('cumulative_threshold', 0.9)
+        
+        # デバッグ設定
+        self.debug_mode = config.get('debug_mode', False)
+        self.debug_threshold = config.get('debug_threshold', 10)
         
         print(f"MEXCLPStrategy初期化開始...")
         
@@ -1236,7 +1246,8 @@ class MEXCLPStrategy(DispatchStrategy):
         
         print(f"MEXCLPStrategy初期化完了:")
         print(f"  busy_fraction: {self.busy_fraction}")
-        print(f"  time_threshold: {self.time_threshold_seconds}秒")
+        print(f"  time_threshold: {self.time_threshold_seconds}秒 ({self.time_threshold_seconds/60:.1f}分)")
+        print(f"  cumulative_threshold: {self.cumulative_threshold}")
         print(f"  計算対象グリッド数: {len(self.significant_demand_grids)}/{len(self.grid_mapping)}")
     
     def _precompute_significant_grids(self):
@@ -1275,47 +1286,103 @@ class MEXCLPStrategy(DispatchStrategy):
         if not self.grid_mapping or self.travel_time_matrix is None:
             raise RuntimeError("MEXCLPStrategy: 初期化が完了していません")
         
+        # デバッグモードの判定
+        debug = self.debug_mode or (len(available_ambulances) <= self.debug_threshold)
+        
+        if debug:
+            print(f"\n[MEXCLP DEBUG] 利用可能救急車: {len(available_ambulances)}台")
+            print(f"[MEXCLP DEBUG] 事案: {request.severity} @ {request.h3_index}")
+        
         # キャッシュのクリア（毎回の配車で状況が変わるため）
         self.coverage_cache.clear()
         
         # Step 1: 閾値時間内到着可能な救急車を分類
         within_threshold = []
         beyond_threshold = []
+        travel_times = {}  # デバッグ用に移動時間を記録
         
         for ambulance in available_ambulances:
             travel_time = travel_time_func(ambulance.current_h3, request.h3_index, 'response')
+            travel_times[ambulance.id] = travel_time
+            
             if travel_time <= self.time_threshold_seconds:
                 within_threshold.append(ambulance)
             else:
                 beyond_threshold.append(ambulance)
         
-        candidates = within_threshold if within_threshold else beyond_threshold
+        if debug:
+            print(f"[MEXCLP DEBUG] 閾値内: {len(within_threshold)}台, 閾値外: {len(beyond_threshold)}台")
         
-        # Step 2: 高速化されたカバレッジ評価
+        # Step 2: 閾値内外で戦略を切り替え
         import time
         calc_start = time.time()
         
-        best_ambulance = None
-        max_remaining_coverage = -float('inf')
-        
-        # バッチ処理用のデータ準備
-        remaining_lists = []
-        for candidate in candidates:
-            remaining = [a for a in available_ambulances if a.id != candidate.id]
-            remaining_lists.append((candidate, remaining))
-        
-        # 各候補の残存カバレッジを計算
-        for candidate, remaining in remaining_lists:
-            coverage = self._calculate_remaining_coverage_optimized(remaining)
+        if within_threshold:
+            # 閾値内: カバレッジ最大化（MEXCLP本来のロジック）
+            candidates = within_threshold
             
-            if coverage > max_remaining_coverage:
-                max_remaining_coverage = coverage
-                best_ambulance = candidate
+            # 1台しかいない場合は即座に選択
+            if len(candidates) == 1:
+                best_ambulance = candidates[0]
+                if debug:
+                    print(f"[MEXCLP DEBUG] 閾値内1台のみ → {best_ambulance.id} (時間: {travel_times[best_ambulance.id]/60:.1f}分)")
+                return best_ambulance
+            
+            # カバレッジ評価（閾値内の複数候補）
+            best_ambulance = None
+            max_remaining_coverage = -float('inf')
+            
+            # バッチ処理用のデータ準備
+            remaining_lists = []
+            for candidate in candidates:
+                remaining = [a for a in available_ambulances if a.id != candidate.id]
+                remaining_lists.append((candidate, remaining))
         
-        calc_time = time.time() - calc_start
+            # 各候補の残存カバレッジを計算
+            candidate_scores = []  # デバッグ用
+            for candidate, remaining in remaining_lists:
+                coverage = self._calculate_remaining_coverage_optimized(remaining)
+                
+                if debug:
+                    candidate_scores.append({
+                        'id': candidate.id,
+                        'coverage': coverage,
+                        'time_sec': travel_times[candidate.id],
+                        'time_min': travel_times[candidate.id] / 60
+                    })
+                
+                # カバレッジ最大化（元のMEXCLPロジック）
+                if coverage > max_remaining_coverage:
+                    max_remaining_coverage = coverage
+                    best_ambulance = candidate
+            
+            calc_time = time.time() - calc_start
+            
+            if debug:
+                print(f"[MEXCLP DEBUG] 候補評価結果（閾値内）:")
+                # カバレッジの高い順（降順）にソート
+                for score_info in sorted(candidate_scores, key=lambda x: x['coverage'], reverse=True)[:5]:  # 上位5台
+                    marker = "★" if score_info['id'] == best_ambulance.id else " "
+                    print(f"{marker} {score_info['id']}: coverage={score_info['coverage']:.4f}, "
+                          f"time={score_info['time_min']:.1f}分")
+                print(f"[MEXCLP DEBUG] 選択: {best_ambulance.id} (残存カバレッジ: {max_remaining_coverage:.4f}, 計算時間: {calc_time:.3f}秒)")
+        
+        else:
+            # 閾値外: 直近隊選択（応答時間最小化）
+            best_ambulance = min(beyond_threshold, key=lambda a: travel_times[a.id])
+            calc_time = time.time() - calc_start
+            
+            if debug:
+                print(f"[MEXCLP DEBUG] 閾値外 → 直近隊選択")
+                sorted_by_time = sorted(beyond_threshold, key=lambda a: travel_times[a.id])[:5]
+                for i, amb in enumerate(sorted_by_time):
+                    marker = "★" if amb.id == best_ambulance.id else " "
+                    print(f"{marker} {amb.id}: time={travel_times[amb.id]/60:.1f}分")
+                print(f"[MEXCLP DEBUG] 選択: {best_ambulance.id} (計算時間: {calc_time:.3f}秒)")
         
         if calc_time > 0.5:  # 0.5秒以上かかった場合のみログ出力
-            print(f"MEXCLP: {len(candidates)}台の評価に{calc_time:.3f}秒")
+            total_candidates = len(within_threshold) if within_threshold else len(beyond_threshold)
+            print(f"MEXCLP: {total_candidates}台の評価に{calc_time:.3f}秒")
         
         return best_ambulance
     

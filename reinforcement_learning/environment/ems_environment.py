@@ -1618,7 +1618,7 @@ class EMSEnvironment:
             return True
         
         # 設定された最大ステップ数を超えたら終了（オプション）
-        max_steps = self.config.get('max_steps_per_episode', 1000)
+        max_steps = self.config.get('max_steps_per_episode',3000)
         if self.episode_step >= max_steps:
             return True
         

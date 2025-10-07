@@ -59,22 +59,40 @@ class RewardDesigner:
             self.mode = core_config.get('mode', 'simple')
             self._load_mode_params_from_core(core_config)
         
-        # ===== オプション機能設定 =====
+        # hybrid modeの場合、reward.core.hybrid_paramsを読み込み
+        if self.mode == 'hybrid':
+            reward_config = config.get('reward', {})
+            core_config = reward_config.get('core', {})
+            self.hybrid_params = core_config.get('hybrid_params', {
+                'time_penalty_per_minute': -0.3,
+                'mild_under_13min_bonus': 5.0,
+                'moderate_under_13min_bonus': 10.0,
+                'over_13min_penalty': -5.0,
+                'over_20min_penalty': -50.0,
+                'good_coverage_bonus': 10.0,
+                'coverage_maintenance_bonus': 5.0,
+                'poor_coverage_penalty': -10.0,
+                'balanced_workload_bonus': 2.0,
+                'overloaded_penalty': -5.0
+            })
+        
+        # ===== カバレッジ設定 =====
+        # reward.core.coverage_impact_weightから読み込み（元の設計）
+        reward_config = config.get('reward', {})
+        core_config = reward_config.get('core', {})
+        self.coverage_impact_weight = core_config.get('coverage_impact_weight', 0.0)
+        
+        # カバレッジが有効かどうか（0より大きい場合は有効）
+        self.coverage_enabled = (self.coverage_impact_weight > 0)
+        
+        # カバレッジパラメータ（オプション）
         optional_features = config.get('optional_features', {})
-        
-        # カバレッジ設定
         coverage_config = optional_features.get('coverage', {})
-        if coverage_config.get('enabled', False) and self.mode != 'simple':
-            self.coverage_enabled = True
-            self.coverage_drop_threshold = coverage_config.get('drop_threshold', 0.05)
-            self.coverage_drop_weight = coverage_config.get('drop_weight', -20.0)
-            self.coverage_impact_weight = coverage_config.get('impact_weight', 0.5)
-        else:
-            self.coverage_enabled = False
-            self.coverage_impact_weight = 0.0
+        self.coverage_drop_threshold = coverage_config.get('drop_threshold', 0.05)
+        self.coverage_drop_weight = coverage_config.get('drop_weight', -20.0)
         
-        # ハイブリッドモード設定
-        hybrid_config = reward_mode_config.get('hybrid', {})
+        # ハイブリッドモード設定（config.yamlのトップレベルから読み込み）
+        hybrid_config = config.get('hybrid_mode', {})
         self.hybrid_enabled = (self.mode == 'hybrid' and 
                               hybrid_config.get('enabled', False))
         
@@ -152,15 +170,18 @@ class RewardDesigner:
     
     def _init_hybrid_mode(self, hybrid_config):
         """ハイブリッドモードの初期化"""
-        self.severe_conditions = hybrid_config.get('severe_conditions', 
-                                                   ['重症', '重篤', '死亡'])
-        self.mild_conditions = hybrid_config.get('mild_conditions', 
-                                                 ['軽症', '中等症'])
+        # severity_classificationから読み込み（config.yamlの構造に合わせる）
+        severity_class = hybrid_config.get('severity_classification', {})
+        self.severe_conditions = severity_class.get('severe_conditions', 
+                                                     ['重症', '重篤', '死亡'])
+        self.mild_conditions = severity_class.get('mild_conditions', 
+                                                   ['軽症', '中等症'])
         
-        weights = hybrid_config.get('weights', {})
+        # reward_weightsから読み込み
+        weights = hybrid_config.get('reward_weights', {})
         self.weight_rt = weights.get('response_time', 0.4)
         self.weight_coverage = weights.get('coverage', 0.5)
-        self.weight_workload = weights.get('workload', 0.1)
+        self.weight_workload = weights.get('workload_balance', 0.1)
         
         print(f"  ハイブリッドモード設定:")
         print(f"    重症系: {self.severe_conditions}")
@@ -311,22 +332,58 @@ class RewardDesigner:
     
     def _calculate_hybrid_reward(self, severity: str, response_time_minutes: float,
                                 coverage_after: float, additional_info: Optional[Dict]) -> float:
-        """ハイブリッドモードの報酬計算"""
+        """ハイブリッドモードの報酬計算
+        
+        重症系: 0（直近隊運用、学習対象外）
+        軽症系: RT最小化 + カバレッジ維持 + 稼働バランス
+        """
         # 重症系は報酬なし（直近隊運用）
         if severity in self.severe_conditions:
             return 0.0
         
-        # 軽症系の報酬計算（シンプル化）
-        base_reward = self._calculate_simple_reward(severity, response_time_minutes)
+        # === A: 応答時間報酬（40%） ===
+        params = self.hybrid_params
+        time_reward = params['time_penalty_per_minute'] * response_time_minutes
         
-        # カバレッジボーナス（オプション）
-        coverage_bonus = 0.0
+        # 傷病度別ボーナス
+        if severity == '中等症' and response_time_minutes <= 13:
+            time_reward += params['moderate_under_13min_bonus']
+        elif severity == '軽症' and response_time_minutes <= 13:
+            time_reward += params['mild_under_13min_bonus']
+        
+        # 閾値ペナルティ
+        if response_time_minutes > 13:
+            time_reward += params['over_13min_penalty']
+        if response_time_minutes > 20:
+            time_reward += params['over_20min_penalty']
+        
+        # === B: カバレッジ報酬（50%） ===
+        coverage_reward = 0.0
         if coverage_after >= 0.8:
-            coverage_bonus = 5.0
-        elif coverage_after < 0.6:
-            coverage_bonus = -10.0
+            coverage_reward = params['good_coverage_bonus']
+        elif coverage_after >= 0.6:
+            coverage_reward = params['coverage_maintenance_bonus']
+        else:
+            coverage_reward = params['poor_coverage_penalty']
         
-        return base_reward * self.weight_rt + coverage_bonus * self.weight_coverage
+        # === C: 稼働バランス報酬（10%） ===
+        workload_reward = 0.0
+        if additional_info:
+            avg_calls = additional_info.get('avg_calls_per_ambulance', 0)
+            if avg_calls > 0:
+                if avg_calls < 5:  # バランスが良い
+                    workload_reward = params['balanced_workload_bonus']
+                elif avg_calls > 10:  # 過負荷
+                    workload_reward = params['overloaded_penalty']
+        
+        # 重み付け合計
+        total_reward = (
+            time_reward * self.weight_rt +
+            coverage_reward * self.weight_coverage +
+            workload_reward * self.weight_workload
+        )
+        
+        return total_reward
     
     def get_failure_penalty(self, failure_type: str) -> float:
         """失敗ペナルティを取得"""

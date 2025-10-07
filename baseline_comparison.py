@@ -39,9 +39,9 @@ EXPERIMENT_CONFIG = {
     'strategies': ['closest', 
                    #'severity_based',
                    #'advanced_severity',
-                   'ppo_agent',
+                   #'ppo_agent',
                    #'second_ride',
-                   #'mexclp',
+                   'mexclp',
                    ],
     
     # 各戦略の日本語表示名
@@ -83,15 +83,15 @@ EXPERIMENT_CONFIG = {
             'time_limit_seconds': 780
         },
         'ppo_agent': {
-            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20250920_212823/final_model.pth',
-            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20250920_212823/configs/config.yaml',
-            'hybrid_mode': True,
-            'severe_conditions': ['重症', '重篤', '死亡'],
-            'mild_conditions': ['軽症', '中等症']
+            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251004_150922/final_model.pth',
+            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251004_150922/configs/config.yaml',
+            'hybrid_mode': False,
+            # 'severe_conditions': ['重症', '重篤', '死亡'],
+            # 'mild_conditions': ['軽症', '中等症']
         },
         'mexclp': {
-            'busy_fraction': 0.1,
-            'time_threshold_seconds': 780
+            'busy_fraction': 0.8,
+            'time_threshold_seconds': 360 # 20分
         }
         }
     }
@@ -223,7 +223,8 @@ def run_comparison_experiment(
                         unified_metrics['charts/response_time_severe_mean'] = rt_by_severity.get('重症', {}).get('mean', 0)
                         unified_metrics['charts/response_time_critical_mean'] = rt_by_severity.get('重篤', {}).get('mean', 0)
                         th_by_severity = report.get('threshold_performance', {}).get('by_severity', {}).get('6_minutes', {})
-                        unified_metrics['charts/response_time_severe_under_6min_rate'] = th_by_severity.get('重症', {}).get('rate', 0)
+                        # rateは0-100スケール（パーセント）で保存されているため、0-1スケールに変換
+                        unified_metrics['charts/response_time_severe_under_6min_rate'] = th_by_severity.get('重症', {}).get('rate', 0) / 100
                         wandb.log(unified_metrics)
                         wandb.log({"full_report": report})
                         print(f"  - wandbに統一されたメトリクスを記録しました。 (Run Name: {run_name})")
@@ -622,9 +623,9 @@ if __name__ == "__main__":
     # 実験パラメータ
     # ============================================================
     EXPERIMENT_PARAMS = {
-        'target_date': "20240801",
-        'duration_hours': 12,
-        'num_runs': 5,
+        'target_date': "20240401",
+        'duration_hours': 720,
+        'num_runs': 1,
         'output_base_dir': 'data/tokyo/experiments',
         'wandb_project': 'ems-dispatch-optimization'
     }
