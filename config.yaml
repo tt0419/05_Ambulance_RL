@@ -24,7 +24,10 @@ data:
   
   # シミュレーション設定
   episode_duration_hours: 24
-  
+
+  # デイタイム救急を除外（ValidationSimulatorと一致）
+  exclude_daytime_ambulances: true  # デイタイム救急を除外（ValidationSimulatorと一致）
+
   # デフォルトのエリア設定（個別設定で上書き）
   area_restriction:
     enabled: false

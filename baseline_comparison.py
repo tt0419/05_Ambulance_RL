@@ -39,9 +39,9 @@ EXPERIMENT_CONFIG = {
     'strategies': ['closest', 
                    #'severity_based',
                    #'advanced_severity',
-                   #'ppo_agent',
+                   'ppo_agent',
                    #'second_ride',
-                   'mexclp',
+                   #'mexclp',
                    ],
     
     # 各戦略の日本語表示名
@@ -83,11 +83,11 @@ EXPERIMENT_CONFIG = {
             'time_limit_seconds': 780
         },
         'ppo_agent': {
-            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251004_150922/final_model.pth',
-            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251004_150922/configs/config.yaml',
-            'hybrid_mode': False,
-            # 'severe_conditions': ['重症', '重篤', '死亡'],
-            # 'mild_conditions': ['軽症', '中等症']
+            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20250930_175329/final_model.pth',
+            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20250930_175329/configs/config.yaml',
+            'hybrid_mode': True,
+            'severe_conditions': ['重症', '重篤', '死亡'],
+            'mild_conditions': ['軽症', '中等症']
         },
         'mexclp': {
             'busy_fraction': 0.8,
@@ -623,9 +623,9 @@ if __name__ == "__main__":
     # 実験パラメータ
     # ============================================================
     EXPERIMENT_PARAMS = {
-        'target_date': "20240401",
+        'target_date': "20240801",
         'duration_hours': 720,
-        'num_runs': 1,
+        'num_runs': 5,
         'output_base_dir': 'data/tokyo/experiments',
         'wandb_project': 'ems-dispatch-optimization'
     }

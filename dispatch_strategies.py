@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any, Set
 from enum import Enum
+from pathlib import Path
 import numpy as np
 import h3
 from collections import defaultdict
@@ -776,7 +777,7 @@ class SecondRideStrategy(DispatchStrategy):
 
 # PPOエージェントを戦略として使用する新しいクラス（改良版）
 class PPOStrategy(DispatchStrategy):
-    """学習済みPPOエージェントを使用する戦略（状態エンコーディング改良版）"""
+    """学習済みPPOエージェントを使用する戦略（Phase 2修正版）"""
     
     def __init__(self):
         super().__init__("ppo_agent", "reinforcement_learning")
@@ -796,12 +797,20 @@ class PPOStrategy(DispatchStrategy):
         self.travel_time_matrix = None
         self.grid_mapping = None
         
+        # ★★★ Phase 2追加: ID対応表 ★★★
+        self.validation_id_to_action = {}  # {"航空機動救急_0": 0, ...}
+        self.action_to_validation_id = {}  # {0: "航空機動救急_0", ...}
+        self.id_mapping_loaded = False
+        
     def initialize(self, config: Dict):
         """PPOモデルと関連コンポーネントの初期化"""
         if not PPO_AVAILABLE:
             raise ImportError("PPOモジュールが利用できません。reinforcement_learningパッケージを確認してください。")
         
         print("PPO戦略を初期化中（改良版）...")
+        
+         # ★★★ Phase 2追加: ID対応表の読み込み ★★★
+        self._load_id_mapping()
         
         # ハイブリッドモード設定
         self.hybrid_mode = config.get('hybrid_mode', False)
@@ -914,6 +923,46 @@ class PPOStrategy(DispatchStrategy):
         self.agent.critic.eval()
         
         print(f"PPOモデルの読み込み完了 (hybrid={self.hybrid_mode})")
+        print(f"  ID対応表: {len(self.validation_id_to_action)}件のマッピング")
+    
+    def _load_id_mapping(self):
+        """Phase 1で生成されたID対応表を読み込む"""
+        mapping_file = Path("id_mapping_proposal.json")
+        
+        if not mapping_file.exists():
+            print("  ⚠️ 警告: id_mapping_proposal.json が見つかりません")
+            print("  Phase 1を実行してID対応表を生成してください")
+            print("  フォールバックモードで動作します（精度は低下します）")
+            self.id_mapping_loaded = False
+            return
+        
+        try:
+            with open(mapping_file, 'r', encoding='utf-8') as f:
+                mapping_data = json.load(f)
+            
+            # string_to_int: ValidationSimulatorのID → アクション番号
+            self.validation_id_to_action = mapping_data.get('string_to_int', {})
+            
+            # int_to_string: アクション番号 → ValidationSimulatorのID
+            # JSONのキーは文字列なので、整数に変換
+            int_to_string = mapping_data.get('int_to_string', {})
+            self.action_to_validation_id = {int(k): v for k, v in int_to_string.items()}
+            
+            self.id_mapping_loaded = True
+            
+            print(f"  ✓ ID対応表読み込み完了: {len(self.validation_id_to_action)}件")
+            
+            # サンプル表示
+            if self.validation_id_to_action:
+                sample = list(self.validation_id_to_action.items())[:3]
+                print(f"  対応例:")
+                for val_id, action in sample:
+                    print(f"    '{val_id}' → アクション{action}")
+                    
+        except Exception as e:
+            print(f"  ⚠️ ID対応表の読み込みエラー: {e}")
+            print("  フォールバックモードで動作します（精度は低下します）")
+            self.id_mapping_loaded = False
     
     def _create_default_config(self) -> Dict:
         """デフォルト設定を作成"""
@@ -1015,27 +1064,43 @@ class PPOStrategy(DispatchStrategy):
             return self._select_closest(request, available_ambulances, travel_time_func)
     
     def _build_state_dict(self, request, available_ambulances, context):
-        """ValidationSimulatorの状態を学習環境形式に変換"""
+        """ValidationSimulatorの状態を学習環境形式に変換（Phase 2修正版）"""
         ambulances = {}
         
-        # 全救急車情報を取得
-        for amb_id, amb_obj in context.all_ambulances.items():
-            try:
-                # IDを整数に変換
-                if isinstance(amb_id, str) and '_' in amb_id:
-                    idx = int(amb_id.split('_')[-1])
-                else:
-                    idx = int(amb_id)
+        if not self.id_mapping_loaded:
+            # フォールバック: 従来の方法（精度は低い）
+            print("警告: ID対応表未ロード、フォールバックモード")
+            for amb_id, amb_obj in context.all_ambulances.items():
+                try:
+                    if isinstance(amb_id, str) and '_' in amb_id:
+                        idx = int(amb_id.split('_')[-1])
+                    else:
+                        idx = int(amb_id)
+                    
+                    ambulances[idx] = {
+                        'current_h3': amb_obj.current_h3_index,
+                        'status': 'available' if amb_obj.status.value == 'available' else 'busy',
+                        'calls_today': amb_obj.num_calls_handled,
+                        'station_h3': amb_obj.station_h3_index
+                    }
+                except (ValueError, AttributeError):
+                    continue
+        else:
+            # ★★★ Phase 2修正: 正しいID対応表を使用 ★★★
+            for amb_id, amb_obj in context.all_ambulances.items():
+                # ValidationSimulatorのID（文字列）をアクション番号（整数）に変換
+                amb_id_str = str(amb_id)
                 
-                # 状態の取得
-                ambulances[idx] = {
-                    'current_h3': amb_obj.current_h3_index,
-                    'status': 'available' if amb_obj.status.value == 'available' and not amb_obj.is_on_break else 'busy',
-                    'calls_today': amb_obj.num_calls_handled,
-                    'station_h3': amb_obj.station_h3_index
-                }
-            except (ValueError, AttributeError):
-                continue
+                if amb_id_str in self.validation_id_to_action:
+                    action_idx = self.validation_id_to_action[amb_id_str]
+                    
+                    # 状態辞書に追加
+                    ambulances[action_idx] = {
+                        'current_h3': amb_obj.current_h3_index,
+                        'status': 'available' if amb_obj.status.value == 'available' else 'busy',
+                        'calls_today': amb_obj.num_calls_handled,
+                        'station_h3': amb_obj.station_h3_index
+                    }
         
         # 事案情報
         pending_call = {
@@ -1057,20 +1122,32 @@ class PPOStrategy(DispatchStrategy):
         }
     
     def _create_action_mask(self, available_ambulances):
-        """利用可能な救急車のマスクを作成"""
+        """利用可能な救急車のマスクを作成（Phase 2修正版）"""
         mask = np.zeros(self.action_dim, dtype=bool)
         
-        for amb_info in available_ambulances:
-            try:
-                if '_' in amb_info.id:
-                    idx = int(amb_info.id.split('_')[-1])
-                else:
-                    idx = int(amb_info.id)
+        if not self.id_mapping_loaded:
+            # フォールバック: 従来の方法
+            for amb_info in available_ambulances:
+                try:
+                    if '_' in str(amb_info.id):
+                        idx = int(str(amb_info.id).split('_')[-1])
+                    else:
+                        idx = int(amb_info.id)
+                    
+                    if 0 <= idx < self.action_dim:
+                        mask[idx] = True
+                except (ValueError, AttributeError):
+                    continue
+        else:
+            # ★★★ Phase 2修正: 正しいID対応表を使用 ★★★
+            for amb_info in available_ambulances:
+                amb_id_str = str(amb_info.id)
                 
-                if 0 <= idx < self.action_dim:
-                    mask[idx] = True
-            except (ValueError, AttributeError):
-                continue
+                if amb_id_str in self.validation_id_to_action:
+                    action_idx = self.validation_id_to_action[amb_id_str]
+                    
+                    if 0 <= action_idx < self.action_dim:
+                        mask[action_idx] = True
         
         if not mask.any():
             print("警告: マスク内に利用可能な救急車がありません")
@@ -1078,18 +1155,30 @@ class PPOStrategy(DispatchStrategy):
         return mask
     
     def _map_action_to_ambulance(self, action: int, available_ambulances):
-        """選択された行動インデックスを救急車オブジェクトにマッピング"""
-        for amb_info in available_ambulances:
-            try:
-                if '_' in amb_info.id:
-                    idx = int(amb_info.id.split('_')[-1])
-                else:
-                    idx = int(amb_info.id)
-                
-                if idx == action:
-                    return amb_info
-            except (ValueError, AttributeError):
-                continue
+        """選択された行動インデックスを救急車オブジェクトにマッピング（Phase 2修正版）"""
+        
+        if not self.id_mapping_loaded:
+            # フォールバック: 従来の方法
+            for amb_info in available_ambulances:
+                try:
+                    if '_' in str(amb_info.id):
+                        idx = int(str(amb_info.id).split('_')[-1])
+                    else:
+                        idx = int(amb_info.id)
+                    
+                    if idx == action:
+                        return amb_info
+                except (ValueError, AttributeError):
+                    continue
+        else:
+            # ★★★ Phase 2修正: 正しいID対応表を使用 ★★★
+            # アクション番号 → ValidationSimulatorのID
+            validation_id = self.action_to_validation_id.get(action)
+            
+            if validation_id:
+                for amb_info in available_ambulances:
+                    if str(amb_info.id) == validation_id:
+                        return amb_info
         
         return None
 

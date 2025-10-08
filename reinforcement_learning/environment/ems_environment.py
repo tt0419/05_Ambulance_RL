@@ -317,7 +317,7 @@ class EMSEnvironment:
             self.service_time_generator = None
     
     def _load_base_data(self):
-        """基本データの読み込み"""
+        """基本データの読み込み（修正版：ValidationSimulatorと同じフィルタリング）"""
         print("\n基本データ読み込み中...")
         
         # 救急署データ
@@ -325,8 +325,37 @@ class EMSEnvironment:
         ambulance_data_full = pd.read_csv(firestation_path, encoding='utf-8')
         ambulance_data_full = ambulance_data_full[ambulance_data_full['special_flag'] == 1]
         
+        print(f"  元データ: {len(ambulance_data_full)}台")
+        
+        # ★★★ 修正1: 常に「救急隊なし」を除外 ★★★
+        if 'team_name' in ambulance_data_full.columns:
+            before_exclusion = len(ambulance_data_full)
+            
+            # ValidationSimulatorと同じフィルタリング
+            team_mask = (ambulance_data_full['team_name'] != '救急隊なし')
+            ambulance_data_full = ambulance_data_full[team_mask].copy()
+            
+            excluded_count = before_exclusion - len(ambulance_data_full)
+            print(f"  「救急隊なし」除外: {before_exclusion}台 → {len(ambulance_data_full)}台 (除外: {excluded_count}台)")
+        
+        # ★★★ 修正2: デイタイム救急の除外（オプション）★★★
+        # config.yamlで制御できるようにする
+        exclude_daytime = self.config.get('data', {}).get('exclude_daytime_ambulances', True)
+        
+        if exclude_daytime and 'team_name' in ambulance_data_full.columns:
+            before_daytime = len(ambulance_data_full)
+            
+            daytime_mask = ~ambulance_data_full['team_name'].str.contains('デイタイム', na=False)
+            ambulance_data_full = ambulance_data_full[daytime_mask].copy()
+            
+            excluded_daytime = before_daytime - len(ambulance_data_full)
+            print(f"  「デイタイム救急」除外: {before_daytime}台 → {len(ambulance_data_full)}台 (除外: {excluded_daytime}台)")
+        
+        print(f"  フィルタリング後: {len(ambulance_data_full)}台")
+        
         # エリア制限フィルタリングの設定確認
         area_restriction = self.config.get('data', {}).get('area_restriction', {})
+        
         if area_restriction.get('enabled', False):
             section_code = area_restriction.get('section_code')
             area_name = area_restriction.get('area_name', '指定エリア')
@@ -334,33 +363,12 @@ class EMSEnvironment:
             # section_codeがnullまたはNoneの場合は全方面を使用（東京23区全域など）
             if section_code is None or section_code == 'null':
                 print(f"  {area_name}（全方面）を使用")
-                # 不要な救急隊を除外（救急隊なし、デイタイム）
-                if 'team_name' in ambulance_data_full.columns:
-                    before_team_filter = len(ambulance_data_full)
-                    # '救急隊なし'と'デイタイム'を含む隊を除外
-                    team_mask = (
-                        (ambulance_data_full['team_name'] != '救急隊なし') &
-                        (~ambulance_data_full['team_name'].str.contains('デイタイム', na=False))
-                    )
-                    self.ambulance_data = ambulance_data_full[team_mask].copy()
-                    print(f"  チーム名フィルタ適用: {before_team_filter}台 → {len(self.ambulance_data)}台 (救急隊なし・デイタイム除外)")
-                else:
-                    self.ambulance_data = ambulance_data_full
+                self.ambulance_data = ambulance_data_full
+                
             elif section_code in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]:
                 # 指定方面の救急隊に限定
                 before_filter = len(ambulance_data_full)
                 section_filtered = ambulance_data_full[ambulance_data_full['section'] == section_code].copy()
-                
-                # 不要な救急隊を除外（救急隊なし、デイタイム）
-                if 'team_name' in section_filtered.columns:
-                    before_team_filter = len(section_filtered)
-                    # '救急隊なし'と'デイタイム'を含む隊を除外
-                    team_mask = (
-                        (section_filtered['team_name'] != '救急隊なし') &
-                        (~section_filtered['team_name'].str.contains('デイタイム', na=False))
-                    )
-                    section_filtered = section_filtered[team_mask].copy()
-                    print(f"  チーム名フィルタ適用: {before_team_filter}台 → {len(section_filtered)}台 (救急隊なし・デイタイム除外)")
                 
                 self.ambulance_data = section_filtered
                 print(f"  {area_name}フィルタ適用: {before_filter}台 → {len(self.ambulance_data)}台")
@@ -372,14 +380,25 @@ class EMSEnvironment:
                 # その他の場合は全体を使用
                 self.ambulance_data = ambulance_data_full
         else:
+            # ★★★ 修正3: エリア制限なしでもフィルタリング済みデータを使用 ★★★
             self.ambulance_data = ambulance_data_full
-            
-        print(f"  救急署数: {len(self.ambulance_data)}")
+        
+        print(f"  最終救急車数: {len(self.ambulance_data)}台")
+        
+        # ★★★ 修正4: ValidationSimulatorとの一致確認 ★★★
+        print(f"\n  ✓ ValidationSimulatorとの一致確認:")
+        print(f"    - 「救急隊なし」: 除外済み")
+        if exclude_daytime:
+            print(f"    - 「デイタイム救急」: 除外済み")
+        else:
+            print(f"    - 「デイタイム救急」: 含む")
+        print(f"    - 最終台数: {len(self.ambulance_data)}台")
+        print(f"    - この台数がValidationSimulatorと一致する必要があります")
         
         # ★★★ 仮想救急車の作成（学習モード時）★★★
         if self.mode == 'train':
             self.ambulance_data = self._create_virtual_ambulances_if_needed(self.ambulance_data)
-            print(f"  最終救急車数: {len(self.ambulance_data)}台")
+            print(f"  最終救急車数（仮想含む）: {len(self.ambulance_data)}台")
         
         # 病院データ（方面に関係なく全体を使用）
         hospital_path = self.base_dir / "import/hospital_master.csv"
@@ -393,7 +412,6 @@ class EMSEnvironment:
         print(f"  H3グリッド数: {len(self.grid_mapping)}")
         
         # 移動時間行列（軽量版 - 学習用）
-        # 実際のファイルパスに合わせて修正してください
         self.travel_time_matrices = {}
         calibration_dir = self.base_dir / "calibration2"
         for phase in ['response', 'transport', 'return']:
