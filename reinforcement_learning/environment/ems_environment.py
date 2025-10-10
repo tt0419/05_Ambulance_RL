@@ -495,9 +495,21 @@ class EMSEnvironment:
         
         # エピソード用の事案を準備
         self.current_episode_calls = self._prepare_episode_calls(calls_df)
-        self.max_steps_per_episode = len(self.current_episode_calls)
+        
+        # max_steps_per_episodeの設定（configの値を優先）
+        config_max_steps = self.config.get('data', {}).get('max_steps_per_episode') or \
+                          self.config.get('max_steps_per_episode')
+        
+        if config_max_steps:
+            # configで指定されている場合、事案数との小さい方を使用
+            self.max_steps_per_episode = min(config_max_steps, len(self.current_episode_calls))
+        else:
+            # configで指定されていない場合、事案数を使用
+            self.max_steps_per_episode = len(self.current_episode_calls)
         
         print(f"読み込まれた事案数: {len(self.current_episode_calls)}")
+        if config_max_steps:
+            print(f"最大ステップ数: {self.max_steps_per_episode} (config設定: {config_max_steps})")
         
         # 救急車状態の初期化
         self._init_ambulance_states()
@@ -1636,7 +1648,10 @@ class EMSEnvironment:
             return True
         
         # 設定された最大ステップ数を超えたら終了（オプション）
-        max_steps = self.config.get('max_steps_per_episode',3000)
+        # configの階層構造に対応（data.max_steps_per_episode または max_steps_per_episode）
+        max_steps = self.config.get('data', {}).get('max_steps_per_episode') or \
+                    self.config.get('max_steps_per_episode') or \
+                    3000  # フォールバック値
         if self.episode_step >= max_steps:
             return True
         

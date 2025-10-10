@@ -36,14 +36,15 @@ data:
   data_paths:
     grid_mapping: data/tokyo/processed/grid_mapping_res9.json
     travel_time_matrix: data/tokyo/calibration2/linear_calibrated_response.npy
-  episode_duration_hours: 24
+  episode_duration_hours: 72
   eval_periods:
   - end_date: '20240831'
-    start_date: '20240801'
-  max_steps_per_episode: 3000
+    start_date: '20240701'
+  exclude_daytime_ambulances: true
+  max_steps_per_episode: 4000
   train_periods:
   - end_date: '20230831'
-    start_date: '20230801'
+    start_date: '20230701'
 data_paths:
   grid_mapping: data/tokyo/processed/grid_mapping_res9.json
   travel_time_matrix: data/tokyo/calibration2/linear_calibrated_response.npy
@@ -67,7 +68,7 @@ evaluation:
   - dispatch_ratio
   n_eval_episodes: 5
 experiment:
-  description: 0918184111ベースに、8月duration=24,max_steps=3000でお試し
+  description: duration=72,max_steps=4000でお試し
   device: cuda
   name: hybrid_ppo_tokyo23_v1
   seed: 2025
@@ -127,7 +128,7 @@ ppo:
     critic: 0.001
     scheduler: constant
   max_grad_norm: 0.5
-  n_episodes: 5000
+  n_episodes: 4000
   n_epochs: 6
 reward:
   core:
@@ -147,7 +148,7 @@ reward:
         penalty_scale: 2.0
         target: 13
         weight: 2.0
-    coverage_impact_weight: 0.0
+    coverage_impact_weight: 0.5
     discrete_params:
       penalties:
         over_13min: -15.0

@@ -18,7 +18,7 @@ data_paths:
 
 experiment:
   name: "hybrid_ppo_tokyo23_v1"
-  description: "0918184111ベースに、8月duration=24,max_steps=3000でお試し"
+  description: "duration=72,max_steps=4000でお試し"
   seed: 2025
   device: cuda
 
@@ -58,25 +58,25 @@ data:
     state_dim: 999  # ハイブリッドモードでも同じ状態空間
     action_dim: 192
 
-  max_steps_per_episode: 3000  
-  episode_duration_hours: 24
+  max_steps_per_episode: 4000  
+  episode_duration_hours: 72
   
   # 学習期間（軽症系が多い期間と繁忙期の両方を含む）
   train_periods:
-    - start_date: "20230801"
+    - start_date: "20230701"
       end_date: "20230831"    # 10日間に延長
     # - start_date: "20231201"  # 繁忙期データ追加
     #   end_date: "20231210"
   
   eval_periods:
-    - start_date: "20240801"
+    - start_date: "20240701"
       end_date: "20240831"
 
 # -------------------------------------------------------------------
 # PPOハイパーパラメータ (軽症系学習に最適化)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 5000  # 重症系をスキップするため、エピソード数を削減可能
+  n_episodes: 4000  # 重症系をスキップするため、エピソード数を削減可能
   batch_size: 1024
   
   # 学習率（config_tokyo23.yamlの設定を基本的に継承）
