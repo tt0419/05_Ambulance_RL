@@ -2778,7 +2778,9 @@ def run_validation_simulation(
     use_probabilistic_selection: bool = True,  # 軽症・中等症・死亡に確率的選択を適用
     enable_breaks: bool = False,  # 休憩機能の有効/無効を追加
     dispatch_strategy: str = 'closest',  # 追加
-    strategy_config: Dict = None  # 追加
+    strategy_config: Dict = None,  # 追加
+    enable_visualization: bool = True,  # 可視化の有効/無効（軽量モード対応）
+    enable_detailed_reports: bool = True  # 詳細レポートの有効/無効（軽量モード対応）
 ) -> None:
     """
     検証用シミュレーションを実行
@@ -2992,17 +2994,28 @@ def run_validation_simulation(
     # シミュレーションの実行
     report = simulator.run(end_time=simulation_duration_hours * 3600, verbose=verbose_logging)
     
-    # レポートの保存
+    # レポートの保存（軽量モード対応）
     if report:
         os.makedirs(output_dir, exist_ok=True)
         
-        with open(f"{output_dir}/simulation_report.json", 'w', encoding='utf-8') as f:
+        # 軽量モード時はrun番号付きで保存（baseline_comparison.pyで管理）
+        if not enable_detailed_reports:
+            # batchディレクトリ内のrun番号を取得
+            existing_reports = [f for f in os.listdir(output_dir) if f.startswith('simulation_report_run') and f.endswith('.json')]
+            run_number = len(existing_reports) + 1
+            report_filename = f"simulation_report_run{run_number}.json"
+        else:
+            report_filename = "simulation_report.json"
+        
+        with open(f"{output_dir}/{report_filename}", 'w', encoding='utf-8') as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
         
-        # 可視化の作成
-        create_simulation_visualizations_enhanced(report, output_dir)
-        
-        print(f"シミュレーション結果を {output_dir} に保存しました。")
+        # 可視化の作成（軽量モード時はスキップ）
+        if enable_visualization:
+            create_simulation_visualizations_enhanced(report, output_dir)
+            print(f"シミュレーション結果と可視化を {output_dir} に保存しました。")
+        else:
+            print(f"シミュレーション結果を {output_dir} に保存しました（可視化スキップ）。")
         
         # 分析結果のサマリー表示
         if enable_detailed_travel_time_analysis and 'travel_time_analysis' in report:

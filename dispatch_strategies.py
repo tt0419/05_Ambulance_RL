@@ -848,9 +848,17 @@ class PPOStrategy(DispatchStrategy):
         # config.yamlが指定されている場合はそちらを優先
         config_path = config.get('config_path')
         if config_path:
-            print(f"  設定ファイルから読み込み: {config_path}")
-            with open(config_path, 'r', encoding='utf-8') as f:
-                saved_config = yaml.safe_load(f)
+            config_file = Path(config_path)
+            if config_file.exists():
+                print(f"  設定ファイルから読み込み: {config_path}")
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    saved_config = yaml.safe_load(f)
+            else:
+                print(f"  警告: 設定ファイルが見つかりません: {config_path}")
+                print(f"  チェックポイントの設定を使用します")
+                if not saved_config:
+                    print("  警告: チェックポイントにも設定情報がありません。デフォルト設定を使用します")
+                    saved_config = self._create_default_config()
         elif not saved_config:
             # チェックポイントにもconfigがない場合、デフォルト設定を使用
             print("  警告: 設定情報が見つかりません。デフォルト設定を使用します")

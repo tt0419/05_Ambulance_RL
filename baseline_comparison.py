@@ -9,11 +9,12 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 import json
 import pandas as pd
 import numpy as np
-from datetime import datetime  # ★★★ datetimeを直接インポート
+from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Dict, List
 from scipy import stats
+import sys
 
 import wandb
 
@@ -83,8 +84,9 @@ EXPERIMENT_CONFIG = {
             'time_limit_seconds': 780
         },
         'ppo_agent': {
-            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20250930_175329/final_model.pth',
-            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20250930_175329/configs/config.yaml',
+            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251015_100958/final_model.pth',
+            # config_path: 設定ファイルのパス（オプション、存在しない場合はチェックポイントから読み込む）
+            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251015_100958/configs/config.json',
             'hybrid_mode': True,
             'severe_conditions': ['重症', '重篤', '死亡'],
             'mild_conditions': ['軽症', '中等症']
@@ -107,21 +109,109 @@ def flatten_dict(d, parent_key='', sep='.'):
             items.append((new_key, v))
     return dict(items)
 
+def generate_random_date_in_range(start_date: str, end_date: str) -> str:
+    """
+    指定期間内からランダムな日付を選択
+    
+    Args:
+        start_date: 開始日 (YYYYMMDD形式)
+        end_date: 終了日 (YYYYMMDD形式)
+    
+    Returns:
+        ランダムに選択された日付 (YYYYMMDD形式)
+    """
+    start_dt = datetime.strptime(start_date, '%Y%m%d')
+    end_dt = datetime.strptime(end_date, '%Y%m%d')
+    
+    # 日数差を計算
+    delta_days = (end_dt - start_dt).days
+    
+    if delta_days < 0:
+        raise ValueError(f"開始日({start_date})が終了日({end_date})より後です")
+    
+    # ランダムに日数を選択
+    random_days = np.random.randint(0, delta_days + 1)
+    
+    # 選択された日付を計算
+    selected_dt = start_dt + timedelta(days=random_days)
+    
+    return selected_dt.strftime('%Y%m%d')
+
 def run_comparison_experiment(
-    target_date: str,
-    duration_hours: int = 168,
-    num_runs: int = 5,
+    start_date: str,
+    end_date: str,
+    episode_duration_hours: int = 24,
+    num_runs: int = 100,
     output_base_dir: str = 'data/tokyo/experiments',
-    wandb_project: str = "ambulance-dispatch-simulation"
+    wandb_project: str = "ambulance-dispatch-simulation",
+    experiment_name: str = None
 ):
     """
+    複数日にわたるランダムサンプリング実験
+    
     Args:
-        target_date: シミュレーション開始日（YYYYMMDD形式）
-        duration_hours: シミュレーション期間（時間）
-        num_runs: 各戦略の実行回数
-        output_base_dir: 結果出力ディレクトリ
+        start_date: 期間の開始日（YYYYMMDD形式）
+        end_date: 期間の終了日（YYYYMMDD形式）
+        episode_duration_hours: 1エピソードの長さ（時間）
+        num_runs: 各戦略の実行回数（ランダムサンプリング）
+        output_base_dir: 結果出力ベースディレクトリ
         wandb_project: wandbのプロジェクト名
+        experiment_name: カスタム実験名（オプション）
     """
+    # 実験ディレクトリの作成
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    if experiment_name:
+        experiment_dir_name = f"{experiment_name}_{timestamp}"
+    else:
+        strategies_count = len(EXPERIMENT_CONFIG['strategies'])
+        experiment_dir_name = f"comparison_{start_date}-{end_date}_{episode_duration_hours}h_{num_runs}runs_{timestamp}"
+    
+    experiment_dir = os.path.join(output_base_dir, experiment_dir_name)
+    os.makedirs(experiment_dir, exist_ok=True)
+    
+    # 日数を計算
+    start_dt = datetime.strptime(start_date, '%Y%m%d')
+    end_dt = datetime.strptime(end_date, '%Y%m%d')
+    total_days = (end_dt - start_dt).days + 1
+    
+    print("=" * 80)
+    print("ディスパッチ戦略比較実験 (ランダムサンプリング)")
+    print(f"実験ディレクトリ: {experiment_dir}")
+    print(f"期間: {start_date} - {end_date} ({total_days}日間)")
+    print(f"エピソード長: {episode_duration_hours}時間")
+    print(f"実行回数: 各戦略 {num_runs}回")
+    print(f"比較戦略: {', '.join([EXPERIMENT_CONFIG['strategy_labels'][s] for s in EXPERIMENT_CONFIG['strategies']])}")
+    print("=" * 80)
+    
+    # 実験メタデータの保存
+    experiment_metadata = {
+        'experiment_name': experiment_dir_name,
+        'timestamp': timestamp,
+        'configuration': {
+            'start_date': start_date,
+            'end_date': end_date,
+            'total_days': total_days,
+            'episode_duration_hours': episode_duration_hours,
+            'num_runs': num_runs,
+            'strategies': EXPERIMENT_CONFIG['strategies'],
+            'strategy_configs': {
+                strategy: EXPERIMENT_CONFIG['strategy_configs'][strategy]
+                for strategy in EXPERIMENT_CONFIG['strategies']
+            }
+        },
+        'environment': {
+            'python_version': sys.version,
+            'random_seed_base': 42
+        }
+    }
+    
+    metadata_path = os.path.join(experiment_dir, 'experiment_metadata.json')
+    with open(metadata_path, 'w', encoding='utf-8') as f:
+        json.dump(experiment_metadata, f, indent=2, ensure_ascii=False, default=str)
+    
+    print(f"実験メタデータを保存: {metadata_path}\n")
+    
     # wandbの初期設定
     try:
         wandb.login()
@@ -140,30 +230,36 @@ def run_comparison_experiment(
     # 実験結果格納用（動的に初期化）
     results = {strategy: [] for strategy in strategies}
     
-    print("=" * 60)
-    print("ディスパッチ戦略比較実験 (wandb連携)")
-    print(f"W&B Project: {wandb_project}")
-    print(f"対象期間: {target_date} から {duration_hours}時間")
-    print(f"実行回数: 各戦略 {num_runs}回")
-    print(f"比較戦略: {', '.join([EXPERIMENT_CONFIG['strategy_labels'][s] for s in strategies])}")
-    print("=" * 60)
-    
     for strategy in strategies:
         print(f"\n戦略: {EXPERIMENT_CONFIG['strategy_labels'][strategy]} ({strategy})")
         print("-" * 40)
         
+        # 戦略ごとのbatchディレクトリを実験ディレクトリ内に作成
+        strategy_batch_dir = os.path.join(experiment_dir, f"{strategy}_batch")
+        os.makedirs(strategy_batch_dir, exist_ok=True)
+        
+        # 軽量モード判定
+        is_lightweight_mode = num_runs >= 10
+        if is_lightweight_mode:
+            print(f"  軽量モード: 個別グラフ生成をスキップします")
+        
         for run_idx in range(num_runs):
-            print(f"  実行 {run_idx + 1}/{num_runs}...")
+            # ランダム日付選択
+            selected_date = generate_random_date_in_range(start_date, end_date)
+            
+            print(f"  実行 {run_idx + 1}/{num_runs}... (日付: {selected_date})")
             
             run_timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-            run_name = f"{strategy}-{run_timestamp}"
+            run_name = f"{strategy}-{selected_date}-run{run_idx + 1}"
             
             plt.close('all')
             
             current_strategy_config = strategy_configs.get(strategy, {})
             config_for_wandb = {
-                "target_date": target_date,
-                "duration_hours": duration_hours,
+                "start_date": start_date,
+                "end_date": end_date,
+                "selected_date": selected_date,
+                "episode_duration_hours": episode_duration_hours,
                 "num_runs": num_runs,
                 "run_index": run_idx + 1,
                 "random_seed": 42 + run_idx,
@@ -171,24 +267,21 @@ def run_comparison_experiment(
                 **flatten_dict(current_strategy_config, parent_key='strategy_params')
             }
             
-            output_dir = os.path.join(
-                output_base_dir,
-                f"{strategy}_{target_date}_{duration_hours}h_run{run_idx + 1}"
-            )
-            os.makedirs(output_dir, exist_ok=True)
+            # 軽量モード：batchディレクトリに直接保存
+            output_dir = strategy_batch_dir
 
             run = None
             if os.environ.get('WANDB_MODE') == 'disabled':
-                print(f"  - wandbが無効化されているため、ローカルモードで実行します")
+                pass  # ローカルモード
             else:
                 try:
                     run = wandb.init(
                         project=wandb_project,
                         config=config_for_wandb,
-                        group=f"{strategy}-{target_date}",
+                        group=f"{strategy}-{start_date}-{end_date}",
                         name=run_name,
                         job_type="simulation",
-                        tags=["baseline", strategy],
+                        tags=["baseline", strategy, "random_sampling"],
                         settings=wandb.Settings(init_timeout=120),
                         resume="allow"
                     )
@@ -196,21 +289,31 @@ def run_comparison_experiment(
                     print(f"  - wandb連携エラー(初期化): {e}")
                     run = None
             
-            # シミュレーション実行
+            # シミュレーション実行（軽量モード対応）
             run_validation_simulation(
-                target_date_str=target_date,
+                target_date_str=selected_date,
                 output_dir=output_dir,
-                simulation_duration_hours=duration_hours,
+                simulation_duration_hours=episode_duration_hours,
                 random_seed=42 + run_idx,
                 verbose_logging=False,
+                enable_visualization=not is_lightweight_mode,
+                enable_detailed_reports=not is_lightweight_mode,
                 dispatch_strategy=strategy,
                 strategy_config=current_strategy_config
             )
 
-            report_path = os.path.join(output_dir, 'simulation_report.json')
+            # レポート読み込み（run番号付きファイル名）
+            report_filename = f"simulation_report_run{run_idx + 1}.json"
+            report_path = os.path.join(output_dir, report_filename)
             try:
                 with open(report_path, 'r', encoding='utf-8') as f:
                     report = json.load(f)
+                    # 実行情報を追加
+                    report['run_metadata'] = {
+                        'run_index': run_idx + 1,
+                        'selected_date': selected_date,
+                        'random_seed': 42 + run_idx
+                    }
                     results[strategy].append(report)
 
                     if run is not None:
@@ -239,20 +342,27 @@ def run_comparison_experiment(
                 if run is not None:
                     wandb.finish()
     
-    # 結果の分析と比較
-    print("\n" + "=" * 60)
-    print("実験結果の分析")
-    print("=" * 60)
+    # 結果の集約と分析（実験ディレクトリに保存）
+    print("\n" + "=" * 80)
+    print("実験結果の集約と分析")
+    print("=" * 80)
     
-    analysis_results = analyze_results(results)
+    # 効率的な集約
+    aggregated = aggregate_results_efficiently(results, experiment_dir, num_runs)
     
-    # 結果の可視化
-    visualize_comparison(analysis_results, output_base_dir)
+    # 収束分析の可視化
+    visualize_convergence(results, experiment_dir)
     
-    # サマリーレポートの作成
-    create_summary_report(analysis_results, output_base_dir)
+    # 従来の可視化（集約データを使用）
+    visualize_comparison(aggregated, experiment_dir)
     
-    return analysis_results
+    # 詳細サマリーレポート（実験設定込み）
+    create_detailed_summary_report(aggregated, experiment_dir, experiment_metadata)
+    
+    print(f"\n実験完了！")
+    print(f"結果は以下のディレクトリに保存されました: {experiment_dir}")
+    
+    return aggregated, experiment_dir
 
 def analyze_results(results: Dict[str, List]) -> Dict:
     """実験結果を分析"""
@@ -347,6 +457,248 @@ def analyze_results(results: Dict[str, List]) -> Dict:
         }
     
     return analysis
+
+def aggregate_results_efficiently(results: Dict[str, List], 
+                                  output_dir: str,
+                                  num_runs: int) -> Dict:
+    """
+    大量実行結果を効率的に集約
+    
+    Args:
+        results: 戦略ごとの結果リスト
+        output_dir: 出力ディレクトリ
+        num_runs: 実行回数
+    
+    Returns:
+        集約された統計情報
+    """
+    print(f"\n結果集約中: {num_runs}回の実行結果を統計処理")
+    
+    aggregated = {}
+    
+    for strategy, reports in results.items():
+        print(f"\n戦略: {strategy} - {len(reports)}件の結果を集約")
+        
+        # 応答時間データの収集
+        all_response_times = []
+        severe_response_times = []
+        mild_response_times = []
+        
+        threshold_6min_rates = []
+        threshold_13min_rates = []
+        threshold_6min_severe_rates = []
+        
+        for idx, report in enumerate(reports):
+            # 基本統計
+            if 'response_times' in report and 'overall' in report['response_times']:
+                all_response_times.append(report['response_times']['overall']['mean'])
+            
+            # 傷病度別
+            if 'by_severity' in report.get('response_times', {}):
+                for sev in ['重症', '重篤', '死亡']:
+                    if sev in report['response_times']['by_severity']:
+                        severe_response_times.append(
+                            report['response_times']['by_severity'][sev]['mean']
+                        )
+                for sev in ['軽症', '中等症']:
+                    if sev in report['response_times']['by_severity']:
+                        mild_response_times.append(
+                            report['response_times']['by_severity'][sev]['mean']
+                        )
+            
+            # 閾値達成率
+            if 'threshold_performance' in report:
+                threshold_6min_rates.append(
+                    report['threshold_performance']['6_minutes']['rate']
+                )
+                threshold_13min_rates.append(
+                    report['threshold_performance']['13_minutes']['rate']
+                )
+                
+                # 重症系の6分達成率
+                if 'by_severity' in report['threshold_performance']:
+                    severe_6min_rates = []
+                    for sev in ['重症', '重篤']:
+                        if sev in report['threshold_performance']['by_severity']['6_minutes']:
+                            severe_6min_rates.append(
+                                report['threshold_performance']['by_severity']['6_minutes'][sev]['rate']
+                            )
+                    if severe_6min_rates:
+                        threshold_6min_severe_rates.append(np.mean(severe_6min_rates))
+        
+        # 統計計算（信頼区間も含む）
+        aggregated[strategy] = {
+            'response_time_overall': {
+                'mean': np.mean(all_response_times),
+                'std': np.std(all_response_times),
+                'median': np.median(all_response_times),
+                'ci_95': stats.t.interval(0.95, len(all_response_times)-1,
+                                         loc=np.mean(all_response_times),
+                                         scale=stats.sem(all_response_times)) if len(all_response_times) > 1 else (0, 0),
+                'min': np.min(all_response_times),
+                'max': np.max(all_response_times),
+                'values': all_response_times
+            },
+            'response_time_severe': {
+                'mean': np.mean(severe_response_times) if severe_response_times else 0,
+                'std': np.std(severe_response_times) if severe_response_times else 0,
+                'median': np.median(severe_response_times) if severe_response_times else 0,
+                'values': severe_response_times
+            },
+            'response_time_mild': {
+                'mean': np.mean(mild_response_times) if mild_response_times else 0,
+                'std': np.std(mild_response_times) if mild_response_times else 0,
+                'median': np.median(mild_response_times) if mild_response_times else 0,
+                'values': mild_response_times
+            },
+            'threshold_6min': {
+                'mean': np.mean(threshold_6min_rates),
+                'std': np.std(threshold_6min_rates),
+                'values': threshold_6min_rates
+            },
+            'threshold_13min': {
+                'mean': np.mean(threshold_13min_rates),
+                'std': np.std(threshold_13min_rates),
+                'values': threshold_13min_rates
+            },
+            'threshold_6min_severe': {
+                'mean': np.mean(threshold_6min_severe_rates) if threshold_6min_severe_rates else 0,
+                'std': np.std(threshold_6min_severe_rates) if threshold_6min_severe_rates else 0,
+                'values': threshold_6min_severe_rates
+            },
+            'sample_size': len(all_response_times)
+        }
+        
+        # 進捗表示
+        print(f"  平均応答時間: {aggregated[strategy]['response_time_overall']['mean']:.2f} ± "
+              f"{aggregated[strategy]['response_time_overall']['std']:.2f} 分")
+        print(f"  サンプル数: {len(all_response_times)}")
+    
+    # 集約結果をJSON保存
+    summary_path = os.path.join(output_dir, 'aggregated_results.json')
+    with open(summary_path, 'w', encoding='utf-8') as f:
+        # valuesは保存しない（サイズが大きいため）
+        json.dump({
+            k: {key: val for key, val in v.items() if key != 'values'}
+            for k, v in aggregated.items()
+        }, f, indent=2, ensure_ascii=False)
+    
+    print(f"\n集約結果を保存: {summary_path}")
+    
+    return aggregated
+
+def visualize_convergence(results: Dict[str, List], output_dir: str):
+    """
+    実行回数と結果の収束を可視化
+    100回の実行が統計的に妥当かを確認
+    """
+    strategies = EXPERIMENT_CONFIG['strategies']
+    strategy_labels = EXPERIMENT_CONFIG['strategy_labels']
+    strategy_colors = EXPERIMENT_CONFIG['strategy_colors']
+    
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle('実行回数による結果の収束', fontsize=16)
+    
+    # 1. 累積平均の収束プロット
+    ax = axes[0, 0]
+    for strategy in strategies:
+        reports = results[strategy]
+        if not reports:
+            continue
+        means = [r.get('response_times', {}).get('overall', {}).get('mean', 0) for r in reports]
+        means = [m for m in means if m > 0]  # 0を除外
+        if means:
+            cumulative_means = np.cumsum(means) / np.arange(1, len(means) + 1)
+            
+            ax.plot(range(1, len(cumulative_means) + 1), cumulative_means,
+                   label=strategy_labels[strategy], color=strategy_colors[strategy],
+                   linewidth=2)
+    
+    ax.set_xlabel('実行回数')
+    ax.set_ylabel('累積平均応答時間（分）')
+    ax.set_title('累積平均の収束')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # 2. 実行ごとのばらつき
+    ax = axes[0, 1]
+    for strategy in strategies:
+        reports = results[strategy]
+        if not reports:
+            continue
+        means = [r.get('response_times', {}).get('overall', {}).get('mean', 0) for r in reports]
+        means = [m for m in means if m > 0]
+        if means:
+            ax.scatter(range(1, len(means) + 1), means,
+                      label=strategy_labels[strategy], 
+                      color=strategy_colors[strategy],
+                      alpha=0.5, s=20)
+    
+    ax.set_xlabel('実行回数')
+    ax.set_ylabel('平均応答時間（分）')
+    ax.set_title('実行ごとのばらつき')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # 3. 標準誤差の推移
+    ax = axes[1, 0]
+    for strategy in strategies:
+        reports = results[strategy]
+        if not reports:
+            continue
+        means = [r.get('response_times', {}).get('overall', {}).get('mean', 0) for r in reports]
+        means = [m for m in means if m > 0]
+        
+        if len(means) > 1:
+            # 各時点での標準誤差を計算
+            sems = [stats.sem(means[:i+1]) for i in range(len(means))]
+            
+            ax.plot(range(1, len(sems) + 1), sems,
+                   label=strategy_labels[strategy], color=strategy_colors[strategy],
+                   linewidth=2)
+    
+    ax.set_xlabel('実行回数')
+    ax.set_ylabel('標準誤差（分）')
+    ax.set_title('標準誤差の減少')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # 4. 信頼区間の幅
+    ax = axes[1, 1]
+    for strategy in strategies:
+        reports = results[strategy]
+        if not reports:
+            continue
+        means = [r.get('response_times', {}).get('overall', {}).get('mean', 0) for r in reports]
+        means = [m for m in means if m > 0]
+        
+        if len(means) > 1:
+            # 各時点での95%信頼区間の幅
+            ci_widths = []
+            for i in range(1, len(means) + 1):
+                if i > 1:
+                    ci = stats.t.interval(0.95, i-1, loc=np.mean(means[:i]), 
+                                         scale=stats.sem(means[:i]))
+                    ci_widths.append(ci[1] - ci[0])
+                else:
+                    ci_widths.append(0)
+            
+            ax.plot(range(1, len(ci_widths) + 1), ci_widths,
+                   label=strategy_labels[strategy], color=strategy_colors[strategy],
+                   linewidth=2)
+    
+    ax.set_xlabel('実行回数')
+    ax.set_ylabel('95%信頼区間の幅（分）')
+    ax.set_title('推定精度の向上')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'convergence_analysis.png'), 
+                dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"収束分析グラフを保存: {os.path.join(output_dir, 'convergence_analysis.png')}")
 
 def visualize_comparison(analysis: Dict, output_dir: str):
     """比較結果の可視化"""
@@ -617,26 +969,229 @@ def create_summary_report(analysis: Dict, output_dir: str):
     
     print(f"サマリーレポートを保存: {report_path}")
 
+def create_detailed_summary_report(aggregated: Dict, 
+                                   output_dir: str,
+                                   experiment_metadata: Dict):
+    """
+    詳細サマリーレポート（実験設定込み、軽量モード用）
+    
+    Args:
+        aggregated: 集約された統計情報
+        output_dir: 出力ディレクトリ
+        experiment_metadata: 実験メタデータ
+    """
+    report_path = os.path.join(output_dir, 'experiment_summary.txt')
+    strategies = EXPERIMENT_CONFIG['strategies']
+    strategy_labels = EXPERIMENT_CONFIG['strategy_labels']
+    
+    with open(report_path, 'w', encoding='utf-8') as f:
+        # ヘッダー
+        f.write("=" * 80 + "\n")
+        f.write("救急ディスパッチ戦略比較実験 - 詳細レポート\n")
+        f.write("=" * 80 + "\n")
+        f.write(f"実験名: {experiment_metadata['experiment_name']}\n")
+        f.write(f"作成日時: {experiment_metadata['timestamp']}\n\n")
+        
+        # 実験設定
+        config = experiment_metadata['configuration']
+        f.write("【実験設定】\n")
+        f.write("-" * 80 + "\n")
+        f.write(f"対象期間: {config['start_date']} - {config['end_date']} ({config['total_days']}日間)\n")
+        f.write(f"エピソード長: {config['episode_duration_hours']}時間\n")
+        f.write(f"実行回数: 各戦略 {config['num_runs']}回（ランダムサンプリング）\n")
+        f.write(f"比較戦略数: {len(config['strategies'])}\n")
+        f.write(f"戦略一覧: {', '.join([strategy_labels[s] for s in config['strategies']])}\n\n")
+        
+        # 実験方法
+        f.write("【実験方法】\n")
+        f.write("-" * 80 + "\n")
+        f.write(f"1. {config['total_days']}日間の期間から、各実行ごとにランダムに日付を選択\n")
+        f.write(f"2. 選択された日付から{config['episode_duration_hours']}時間のエピソードをシミュレート\n")
+        f.write(f"3. 各戦略について{config['num_runs']}回ずつ実行\n")
+        f.write(f"4. 結果を集約し、統計的分析を実施\n\n")
+        
+        # 戦略別結果
+        f.write("【戦略別結果】\n")
+        f.write("=" * 80 + "\n\n")
+        
+        for strategy in strategies:
+            strategy_label = strategy_labels[strategy]
+            f.write(f"■ {strategy_label}\n")
+            f.write("-" * 80 + "\n")
+            
+            data = aggregated[strategy]
+            
+            f.write(f"1. 平均応答時間\n")
+            f.write(f"   全体:\n")
+            f.write(f"     平均: {data['response_time_overall']['mean']:.2f} 分\n")
+            f.write(f"     標準偏差: {data['response_time_overall']['std']:.2f} 分\n")
+            f.write(f"     中央値: {data['response_time_overall']['median']:.2f} 分\n")
+            f.write(f"     範囲: {data['response_time_overall']['min']:.2f} - {data['response_time_overall']['max']:.2f} 分\n")
+            if data['response_time_overall'].get('ci_95'):
+                ci = data['response_time_overall']['ci_95']
+                f.write(f"     95%信頼区間: [{ci[0]:.2f}, {ci[1]:.2f}] 分\n")
+            
+            f.write(f"\n   重症系（重症・重篤・死亡）:\n")
+            f.write(f"     平均: {data['response_time_severe']['mean']:.2f} ± {data['response_time_severe']['std']:.2f} 分\n")
+            f.write(f"     中央値: {data['response_time_severe']['median']:.2f} 分\n")
+            
+            f.write(f"\n   軽症系（軽症・中等症）:\n")
+            f.write(f"     平均: {data['response_time_mild']['mean']:.2f} ± {data['response_time_mild']['std']:.2f} 分\n")
+            f.write(f"     中央値: {data['response_time_mild']['median']:.2f} 分\n\n")
+            
+            f.write(f"2. 閾値達成率\n")
+            f.write(f"   6分以内（全体）: {data['threshold_6min']['mean']:.1f} ± {data['threshold_6min']['std']:.1f} %\n")
+            f.write(f"   13分以内（全体）: {data['threshold_13min']['mean']:.1f} ± {data['threshold_13min']['std']:.1f} %\n")
+            f.write(f"   6分以内（重症系）: {data['threshold_6min_severe']['mean']:.1f} ± {data['threshold_6min_severe']['std']:.1f} %\n\n")
+            
+            f.write(f"3. サンプルサイズ\n")
+            f.write(f"   実行回数: {data['sample_size']}\n\n")
+        
+        # 統計的比較
+        f.write("【統計的比較】\n")
+        f.write("=" * 80 + "\n\n")
+        
+        if len(strategies) >= 3:
+            f.write("■ 多群比較（ANOVA）\n")
+            f.write("-" * 80 + "\n")
+            f.write("全戦略の平均値が等しいかを検定\n\n")
+            
+            severe_times = [aggregated[s]['response_time_severe']['values'] for s in strategies]
+            severe_times = [times for times in severe_times if len(times) > 1]
+            
+            if len(severe_times) >= 3:
+                f_stat, p_value = stats.f_oneway(*severe_times)
+                f.write(f"重症系応答時間のANOVA:\n")
+                f.write(f"  F統計量: {f_stat:.3f}\n")
+                f.write(f"  p値: {p_value:.4f}\n")
+                f.write(f"  結果: {'有意差あり (p < 0.05)' if p_value < 0.05 else '有意差なし (p >= 0.05)'}\n\n")
+        
+        f.write("■ ペアワイズ比較（t検定）\n")
+        f.write("-" * 80 + "\n")
+        f.write("各戦略ペアの差が統計的に有意かを検定\n\n")
+        
+        for i, strategy1 in enumerate(strategies):
+            for j, strategy2 in enumerate(strategies[i+1:], i+1):
+                values1 = aggregated[strategy1]['response_time_severe']['values']
+                values2 = aggregated[strategy2]['response_time_severe']['values']
+                
+                if len(values1) > 1 and len(values2) > 1:
+                    t_stat, p_value = stats.ttest_ind(values1, values2)
+                    
+                    mean_diff = np.mean(values1) - np.mean(values2)
+                    
+                    f.write(f"{strategy_labels[strategy1]} vs {strategy_labels[strategy2]}:\n")
+                    f.write(f"  平均差: {mean_diff:+.2f} 分\n")
+                    f.write(f"  t統計量: {t_stat:.3f}\n")
+                    f.write(f"  p値: {p_value:.4f}\n")
+                    f.write(f"  結果: {'有意差あり (p < 0.05)' if p_value < 0.05 else '有意差なし (p >= 0.05)'}\n\n")
+        
+        # 改善率分析
+        f.write("【改善率分析】\n")
+        f.write("=" * 80 + "\n")
+        f.write(f"ベースライン戦略: {strategy_labels[strategies[0]]}\n")
+        f.write("-" * 80 + "\n\n")
+        
+        baseline = strategies[0]
+        baseline_mean_overall = aggregated[baseline]['response_time_overall']['mean']
+        baseline_mean_severe = aggregated[baseline]['response_time_severe']['mean']
+        
+        for strategy in strategies[1:]:
+            f.write(f"■ {strategy_labels[strategy]}\n")
+            
+            strategy_mean_overall = aggregated[strategy]['response_time_overall']['mean']
+            strategy_mean_severe = aggregated[strategy]['response_time_severe']['mean']
+            
+            improvement_overall = (baseline_mean_overall - strategy_mean_overall) / baseline_mean_overall * 100
+            improvement_severe = (baseline_mean_severe - strategy_mean_severe) / baseline_mean_severe * 100
+            
+            f.write(f"  全体応答時間の改善率: {improvement_overall:+.2f}%\n")
+            f.write(f"  重症系応答時間の改善率: {improvement_severe:+.2f}%\n")
+            
+            # 実際の時間短縮
+            time_saved_overall = baseline_mean_overall - strategy_mean_overall
+            time_saved_severe = baseline_mean_severe - strategy_mean_severe
+            
+            f.write(f"  全体応答時間の短縮: {time_saved_overall:+.2f} 分\n")
+            f.write(f"  重症系応答時間の短縮: {time_saved_severe:+.2f} 分\n\n")
+        
+        # 推奨戦略
+        f.write("【推奨戦略】\n")
+        f.write("=" * 80 + "\n")
+        
+        # 重症系応答時間が最も短い戦略
+        best_strategy_severe = min(strategies, 
+                                  key=lambda s: aggregated[s]['response_time_severe']['mean'])
+        
+        # 全体応答時間が最も短い戦略
+        best_strategy_overall = min(strategies, 
+                                   key=lambda s: aggregated[s]['response_time_overall']['mean'])
+        
+        f.write(f"重症系応答時間が最短: {strategy_labels[best_strategy_severe]}\n")
+        f.write(f"  平均: {aggregated[best_strategy_severe]['response_time_severe']['mean']:.2f} 分\n\n")
+        
+        f.write(f"全体応答時間が最短: {strategy_labels[best_strategy_overall]}\n")
+        f.write(f"  平均: {aggregated[best_strategy_overall]['response_time_overall']['mean']:.2f} 分\n\n")
+        
+        # フッター
+        f.write("=" * 80 + "\n")
+        f.write("レポート終了\n")
+        f.write("=" * 80 + "\n")
+    
+    print(f"詳細サマリーレポートを保存: {report_path}")
+
 
 if __name__ == "__main__":
     # ============================================================
-    # 実験パラメータ
+    # 実験パラメータ（新しい仕様）
     # ============================================================
     EXPERIMENT_PARAMS = {
-        'target_date': "20240801",
-        'duration_hours': 720,
-        'num_runs': 5,
+        # 期間指定（ランダムサンプリング）
+        'start_date': "20230601",
+        'end_date': "20230630",  # 1ヶ月間
+        
+        # エピソード設定
+        'episode_duration_hours': 24,  # 24時間エピソード
+        
+        # 実行回数（ランダムサンプリング）
+        'num_runs': 100,  # 各戦略100回ずつ実行
+        
+        # 出力設定
         'output_base_dir': 'data/tokyo/experiments',
-        'wandb_project': 'ems-dispatch-optimization'
+        'wandb_project': 'ems-dispatch-optimization',
+        
+        # オプション：カスタム実験名
+        'experiment_name': None  # Noneの場合、自動生成
     }
     
+    print("=" * 80)
+    print("救急ディスパッチ戦略比較実験")
+    print("=" * 80)
+    print(f"期間: {EXPERIMENT_PARAMS['start_date']} - {EXPERIMENT_PARAMS['end_date']}")
+    print(f"エピソード長: {EXPERIMENT_PARAMS['episode_duration_hours']}時間")
+    print(f"実行回数: 各戦略 {EXPERIMENT_PARAMS['num_runs']}回")
+    print(f"比較戦略: {', '.join([EXPERIMENT_CONFIG['strategy_labels'][s] for s in EXPERIMENT_CONFIG['strategies']])}")
+    print("=" * 80)
+    
     # 実験実行
-    results = run_comparison_experiment(
-        target_date=EXPERIMENT_PARAMS['target_date'],
-        duration_hours=EXPERIMENT_PARAMS['duration_hours'],
+    aggregated, experiment_dir = run_comparison_experiment(
+        start_date=EXPERIMENT_PARAMS['start_date'],
+        end_date=EXPERIMENT_PARAMS['end_date'],
+        episode_duration_hours=EXPERIMENT_PARAMS['episode_duration_hours'],
         num_runs=EXPERIMENT_PARAMS['num_runs'],
         output_base_dir=EXPERIMENT_PARAMS['output_base_dir'],
-        wandb_project=EXPERIMENT_PARAMS['wandb_project']
+        wandb_project=EXPERIMENT_PARAMS['wandb_project'],
+        experiment_name=EXPERIMENT_PARAMS['experiment_name']
     )
     
-    print("\n実験完了！")
+    print("\n" + "=" * 80)
+    print("実験完了！")
+    print("=" * 80)
+    print(f"結果ディレクトリ: {experiment_dir}")
+    print("\n生成されたファイル:")
+    print(f"  - experiment_metadata.json : 実験設定の詳細")
+    print(f"  - aggregated_results.json : 集約結果（JSON）")
+    print(f"  - experiment_summary.txt : 詳細レポート")
+    print(f"  - strategy_comparison.png : 比較グラフ")
+    print(f"  - convergence_analysis.png : 収束分析グラフ")
+    print("=" * 80)
