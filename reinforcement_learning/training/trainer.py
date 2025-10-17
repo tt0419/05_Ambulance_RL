@@ -310,12 +310,16 @@ class PPOTrainer:
     
     def _evaluate(self) -> float:
         """
-        エージェントを評価
+        エージェントを評価（バリデーションデータ使用）
         
         Returns:
             平均評価報酬
         """
         print("\n評価中...")
+        
+        # ★★★【追加】環境をevalモードに切り替え★★★
+        self.env.set_mode("eval")
+        
         eval_rewards = []
         eval_stats = {
             'response_times': [],
@@ -344,6 +348,9 @@ class PPOTrainer:
             eval_stats['achieved_13min'] += episode_stats['achieved_13min']
             eval_stats['critical_6min'] += episode_stats['critical_6min']
             eval_stats['critical_total'] += episode_stats['critical_total']
+        
+        # ★★★【追加】環境をtrainモードに戻す★★★
+        self.env.set_mode("train")
         
         mean_reward = np.mean(eval_rewards)
         

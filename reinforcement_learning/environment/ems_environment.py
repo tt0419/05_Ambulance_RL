@@ -438,6 +438,29 @@ class EMSEnvironment:
             total = ambulance_features + incident_features + temporal_features + spatial_features
             print(f"  状態空間次元: 救急車{actual_ambulance_count}台 × 4 + その他{incident_features + temporal_features + spatial_features} = {total}")
             return total
+
+
+    def set_mode(self, mode: str):
+        """
+        環境のモードを切り替える（トレーニング/評価）
+        
+        Args:
+            mode: "train" または "eval"
+            
+        Raises:
+            ValueError: 無効なモードが指定された場合
+        """
+        if mode not in ["train", "eval"]:
+            raise ValueError(f"無効なモード: {mode}. 'train' または 'eval' を指定してください。")
+        
+        old_mode = self.mode
+        self.mode = mode
+        
+        # モード切り替え時はログフラグをリセット（期間情報を再表示するため）
+        if old_mode != mode:
+            self._first_period_logged = False
+            print(f"環境モード切り替え: {old_mode} → {mode}")
+
     
     def reset(self, period_index: Optional[int] = None) -> np.ndarray:
         """
