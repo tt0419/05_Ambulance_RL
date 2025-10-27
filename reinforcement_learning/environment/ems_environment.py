@@ -423,22 +423,6 @@ class EMSEnvironment:
         distance_matrix_path = self.base_dir / "processed/travel_distance_matrix_res9.npy"
         self.travel_distance_matrix = np.load(distance_matrix_path)
         
-    def _calculate_state_dim(self) -> int:
-        """状態空間の次元を計算（フォールバック用）"""
-        # StateEncoderが既に次元を計算しているので、そこから取得するだけ
-        if hasattr(self, 'state_encoder'):
-            return self.state_encoder.state_dim
-        else:
-            # 古いフォールバックロジック
-            actual_ambulance_count = self.action_dim if hasattr(self, 'action_dim') else len(self.ambulance_data)
-            ambulance_features = actual_ambulance_count * 4
-            incident_features = 10
-            temporal_features = 8
-            spatial_features = 20
-            total = ambulance_features + incident_features + temporal_features + spatial_features
-            print(f"  状態空間次元: 救急車{actual_ambulance_count}台 × 4 + その他{incident_features + temporal_features + spatial_features} = {total}")
-            return total
-
 
     def set_mode(self, mode: str):
         """

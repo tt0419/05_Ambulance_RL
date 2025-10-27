@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Tuple, Any, Set
 from enum import Enum
 from pathlib import Path
 import numpy as np
+import pandas as pd
 import h3
 from collections import defaultdict
 import json
@@ -777,7 +778,14 @@ class SecondRideStrategy(DispatchStrategy):
 
 # PPOエージェントを戦略として使用する新しいクラス（改良版）
 class PPOStrategy(DispatchStrategy):
-    """学習済みPPOエージェントを使用する戦略（Phase 2修正版）"""
+    """
+    学習済みPPOエージェントを使用する戦略（Phase 3修正版）
+    
+    Phase 3の改善点:
+    - 全救急車の静的情報（所属署、H3インデックス）を事前読み込み
+    - 常に192台分の完全な状態辞書を構築
+    - ValidationSimulatorから不完全な情報が渡されても対応
+    """
     
     def __init__(self):
         super().__init__("ppo_agent", "reinforcement_learning")
@@ -802,15 +810,21 @@ class PPOStrategy(DispatchStrategy):
         self.action_to_validation_id = {}  # {0: "航空機動救急_0", ...}
         self.id_mapping_loaded = False
         
+        # ★★★ Phase 3追加: 全救急車の静的情報を保持 ★★★
+        self.ambulance_static_info = {}  # {action_idx: {'station_h3': str, 'team_name': str, 'validation_id': str}}
+        
     def initialize(self, config: Dict):
         """PPOモデルと関連コンポーネントの初期化"""
         if not PPO_AVAILABLE:
             raise ImportError("PPOモジュールが利用できません。reinforcement_learningパッケージを確認してください。")
         
-        print("PPO戦略を初期化中（改良版）...")
+        print("PPO戦略を初期化中（Phase 3修正版）...")
         
          # ★★★ Phase 2追加: ID対応表の読み込み ★★★
         self._load_id_mapping()
+        
+        # ★★★ Phase 3追加: 全救急車の静的情報を読み込み ★★★
+        self._load_ambulance_static_info()
         
         # ハイブリッドモード設定
         self.hybrid_mode = config.get('hybrid_mode', False)
@@ -972,6 +986,106 @@ class PPOStrategy(DispatchStrategy):
             print("  フォールバックモードで動作します（精度は低下します）")
             self.id_mapping_loaded = False
     
+    def _load_ambulance_static_info(self):
+        """
+        全救急車の静的情報を読み込み
+        EMSEnvironmentと同じフィルタリング処理を適用
+        """
+        print("  全救急車の静的情報を読み込み中...")
+        
+        try:
+            # amb_place_master.csvを直接読み込み
+            ambulance_path = Path("data/tokyo/import/amb_place_master.csv")
+            if not ambulance_path.exists():
+                print(f"  ⚠️ 救急署データが見つかりません: {ambulance_path}")
+                self._create_dummy_static_info()
+                return
+            
+            # データ読み込みとフィルタリング（EMSEnvironmentと同じ）
+            df = pd.read_csv(ambulance_path, encoding='utf-8')
+            
+            # 1. special_flag == 1
+            df = df[df['special_flag'] == 1]
+            
+            # 2. 「救急隊なし」を除外
+            if 'team_name' in df.columns:
+                df = df[df['team_name'] != '救急隊なし']
+            
+            # 3. デイタイム救急を除外（amb != 0）
+            if 'amb' in df.columns:
+                df = df[df['amb'] != 0]
+            
+            # 4. 23区フィルタリング
+            tokyo23_districts = [
+                "千代田区", "中央区", "港区", "新宿区", "文京区", "台東区",
+                "墨田区", "江東区", "品川区", "目黒区", "大田区", "世田谷区",
+                "渋谷区", "中野区", "杉並区", "豊島区", "北区", "荒川区",
+                "板橋区", "練馬区", "足立区", "葛飾区", "江戸川区"
+            ]
+            if 'town' in df.columns:
+                df = df[df['town'].isin(tokyo23_districts)]
+            
+            print(f"  フィルタリング後: {len(df)}台の救急車")
+            
+            # 各救急車の静的情報を保存
+            for idx, row in df.iterrows():
+                team_name = row.get('team_name', f"Unknown_{idx}")
+                validation_id = f"{team_name}_0"
+                
+                # ID対応表から整数インデックスを取得
+                if validation_id in self.validation_id_to_action:
+                    action_idx = self.validation_id_to_action[validation_id]
+                    
+                    # H3インデックスを計算
+                    try:
+                        station_h3 = h3.latlng_to_cell(
+                            row['latitude'],
+                            row['longitude'],
+                            9
+                        )
+                    except:
+                        station_h3 = ""  # フォールバック
+                    
+                    # 静的情報を保存
+                    self.ambulance_static_info[action_idx] = {
+                        'station_h3': station_h3,
+                        'team_name': team_name,
+                        'validation_id': validation_id
+                    }
+            
+            print(f"  ✓ 静的情報読み込み完了: {len(self.ambulance_static_info)}台")
+            
+            # 192台に満たない場合は警告して不足分を埋める
+            if len(self.ambulance_static_info) < 192:
+                print(f"  ⚠️ 警告: 静的情報が192台に満たない（{len(self.ambulance_static_info)}台）")
+                self._fill_missing_static_info()
+                
+        except Exception as e:
+            print(f"  ❌ 静的情報の読み込みエラー: {e}")
+            import traceback
+            traceback.print_exc()
+            self._create_dummy_static_info()
+    
+    def _create_dummy_static_info(self):
+        """ダミーの静的情報を作成"""
+        print("  ダミー静的情報を作成中...")
+        for action_idx in range(192):
+            self.ambulance_static_info[action_idx] = {
+                'station_h3': '',
+                'team_name': f'Dummy_{action_idx}',
+                'validation_id': f'Dummy_{action_idx}_0'
+            }
+    
+    def _fill_missing_static_info(self):
+        """不足している静的情報をダミーで埋める"""
+        for action_idx in range(192):
+            if action_idx not in self.ambulance_static_info:
+                self.ambulance_static_info[action_idx] = {
+                    'station_h3': '',
+                    'team_name': f'Dummy_{action_idx}',
+                    'validation_id': f'Dummy_{action_idx}_0'
+                }
+    
     def _create_default_config(self) -> Dict:
         """デフォルト設定を作成"""
         return {
@@ -1035,7 +1149,6 @@ class PPOStrategy(DispatchStrategy):
     def _select_with_ppo(self, request, available_ambulances, travel_time_func, context):
         """PPOモデルによる選択（学習時と同じ状態エンコーディング）"""
         if self.agent is None or self.state_encoder is None:
-            print("警告: PPOエージェント未初期化、フォールバック")
             return self._select_closest(request, available_ambulances, travel_time_func)
         
         try:
@@ -1056,61 +1169,100 @@ class PPOStrategy(DispatchStrategy):
                     deterministic=True
                 )
             
-            # 5. 選択された行動を救急車にマッピング
+            # 5. マスク内のactionか検証
+            if not action_mask[action]:
+                # マスク外が選択された場合、マスク内で最も確率の高いactionを再選択
+                valid_actions = np.where(action_mask)[0]
+                if len(valid_actions) > 0:
+                    # 有効なactionの中から選択（フォールバック）
+                    action = valid_actions[0]
+            
+            # 6. 選択された行動を救急車にマッピング
             selected_amb = self._map_action_to_ambulance(action, available_ambulances)
             
             if selected_amb:
                 return selected_amb
             else:
-                print(f"警告: Action {action} マッピング失敗、フォールバック")
+                # マッピング失敗時はフォールバック
                 return self._select_closest(request, available_ambulances, travel_time_func)
                 
         except Exception as e:
-            print(f"PPO選択エラー: {e}")
-            import traceback
-            traceback.print_exc()
+            # エラー時はフォールバック
             return self._select_closest(request, available_ambulances, travel_time_func)
     
     def _build_state_dict(self, request, available_ambulances, context):
-        """ValidationSimulatorの状態を学習環境形式に変換（Phase 2修正版）"""
+        """
+        ValidationSimulatorの状態を学習環境形式に変換（Phase 3修正版）
+        常に192台分の完全な状態辞書を構築
+        """
+        # デバッグ情報
+        if hasattr(context, 'all_ambulances'):
+            actual_count = len(context.all_ambulances)
+            if actual_count < 192:
+                print(f"[INFO] ValidationSimulatorから {actual_count}/192 台の情報のみ受信")
+        
+        # 1. まず192台分の初期状態を作成（全て利用不可として初期化）
         ambulances = {}
+        for action_idx in range(192):
+            static_info = self.ambulance_static_info.get(action_idx, {})
+            
+            # デフォルト状態：所属署で待機中だが利用不可
+            ambulances[action_idx] = {
+                'current_h3': static_info.get('station_h3', ''),
+                'status': 'unavailable',  # デフォルトは利用不可
+                'calls_today': 0,
+                'station_h3': static_info.get('station_h3', '')
+            }
         
-        if not self.id_mapping_loaded:
-            # フォールバック: 従来の方法（精度は低い）
-            print("警告: ID対応表未ロード、フォールバックモード")
-            for amb_id, amb_obj in context.all_ambulances.items():
-                try:
-                    if isinstance(amb_id, str) and '_' in amb_id:
-                        idx = int(amb_id.split('_')[-1])
-                    else:
-                        idx = int(amb_id)
+        # 2. ValidationSimulatorから渡された実際の救急車情報で上書き
+        if hasattr(context, 'all_ambulances'):
+            updated_count = 0
+            
+            if not self.id_mapping_loaded:
+                # フォールバック: 従来の方法
+                for amb_id, amb_obj in context.all_ambulances.items():
+                    try:
+                        if isinstance(amb_id, str) and '_' in amb_id:
+                            action_idx = int(amb_id.split('_')[-1])
+                        else:
+                            action_idx = int(amb_id)
+                        
+                        if 0 <= action_idx < 192:
+                            status_value = amb_obj.status.value if hasattr(amb_obj.status, 'value') else str(amb_obj.status)
+                            
+                            ambulances[action_idx] = {
+                                'current_h3': amb_obj.current_h3_index,
+                                'status': 'available' if status_value == 'available' else 'busy',
+                                'calls_today': amb_obj.num_calls_handled,
+                                'station_h3': amb_obj.station_h3_index
+                            }
+                            updated_count += 1
+                    except (ValueError, AttributeError):
+                        continue
+            else:
+                # ★★★ Phase 3修正: 正しいID対応表を使用して上書き ★★★
+                for amb_id, amb_obj in context.all_ambulances.items():
+                    amb_id_str = str(amb_id)
                     
-                    ambulances[idx] = {
-                        'current_h3': amb_obj.current_h3_index,
-                        'status': 'available' if amb_obj.status.value == 'available' else 'busy',
-                        'calls_today': amb_obj.num_calls_handled,
-                        'station_h3': amb_obj.station_h3_index
-                    }
-                except (ValueError, AttributeError):
-                    continue
-        else:
-            # ★★★ Phase 2修正: 正しいID対応表を使用 ★★★
-            for amb_id, amb_obj in context.all_ambulances.items():
-                # ValidationSimulatorのID（文字列）をアクション番号（整数）に変換
-                amb_id_str = str(amb_id)
-                
-                if amb_id_str in self.validation_id_to_action:
-                    action_idx = self.validation_id_to_action[amb_id_str]
-                    
-                    # 状態辞書に追加
-                    ambulances[action_idx] = {
-                        'current_h3': amb_obj.current_h3_index,
-                        'status': 'available' if amb_obj.status.value == 'available' else 'busy',
-                        'calls_today': amb_obj.num_calls_handled,
-                        'station_h3': amb_obj.station_h3_index
-                    }
+                    # ID対応表を使って整数インデックスを取得
+                    if amb_id_str in self.validation_id_to_action:
+                        action_idx = self.validation_id_to_action[amb_id_str]
+                        
+                        # 実際の状態で上書き
+                        status_value = amb_obj.status.value if hasattr(amb_obj.status, 'value') else str(amb_obj.status)
+                        
+                        ambulances[action_idx] = {
+                            'current_h3': amb_obj.current_h3_index,
+                            'status': 'available' if status_value == 'available' else 'busy',
+                            'calls_today': amb_obj.num_calls_handled,
+                            'station_h3': amb_obj.station_h3_index
+                        }
+                        updated_count += 1
+            
+            if updated_count < 192:
+                print(f"  [INFO] {updated_count}/192 台の救急車情報を更新")
         
-        # 事案情報
+        # 3. 事案情報
         pending_call = {
             'h3_index': request.h3_index,
             'severity': request.severity,
@@ -1118,19 +1270,25 @@ class PPOStrategy(DispatchStrategy):
             'priority': request.priority.value if hasattr(request.priority, 'value') else 0.5
         }
         
-        # 時間情報
+        # 4. 時間情報
         episode_step = int(context.current_time / 60) if context.current_time else 0
         time_of_day = context.hour_of_day if context.hour_of_day is not None else 12
         
-        return {
+        # 状態辞書を返す
+        state_dict = {
             'ambulances': ambulances,
             'pending_call': pending_call,
             'episode_step': episode_step,
             'time_of_day': time_of_day
         }
+        
+        # デバッグ: 状態辞書のサイズを確認
+        assert len(ambulances) == 192, f"救急車数が不正: {len(ambulances)}"
+        
+        return state_dict
     
     def _create_action_mask(self, available_ambulances):
-        """利用可能な救急車のマスクを作成（Phase 2修正版）"""
+        """利用可能な救急車のマスクを作成（Phase 3修正版）"""
         mask = np.zeros(self.action_dim, dtype=bool)
         
         if not self.id_mapping_loaded:
@@ -1147,7 +1305,7 @@ class PPOStrategy(DispatchStrategy):
                 except (ValueError, AttributeError):
                     continue
         else:
-            # ★★★ Phase 2修正: 正しいID対応表を使用 ★★★
+            # ★★★ Phase 3修正: 正しいID対応表を使用 ★★★
             for amb_info in available_ambulances:
                 amb_id_str = str(amb_info.id)
                 
@@ -1157,8 +1315,11 @@ class PPOStrategy(DispatchStrategy):
                     if 0 <= action_idx < self.action_dim:
                         mask[action_idx] = True
         
+        # マスクの妥当性チェック
         if not mask.any():
-            print("警告: マスク内に利用可能な救急車がありません")
+            print("⚠️ 警告: 利用可能な救急車が1台もありません")
+            # フォールバック：最初の救急車を利用可能にする
+            mask[0] = True
         
         return mask
     

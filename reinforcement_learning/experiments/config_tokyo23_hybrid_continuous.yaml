@@ -18,9 +18,9 @@ data_paths:
   travel_time_matrix: "data/tokyo/calibration2/linear_calibrated_response.npy"
 
 experiment:
-  name: "hybrid_continuous_ppo_tokyo23_v1"
-  description: "continuousモードの報酬設計をhybridに統合。duration=24,max_steps=3000"
-  seed: 2025
+  name: "hybrid_ppo_cont_oneday_v1"
+  description: "繁忙期のデータを使用して学習を実施してみる"
+  seed: 42
   device: cuda
 
 # -------------------------------------------------------------------
@@ -42,8 +42,8 @@ hybrid_mode:
   
   # ハイブリッドモード内の報酬重み付け
   reward_weights:
-    response_time: 0.5      # 応答時間重視（continuousの連続報酬を活かす）
-    coverage: 0.4           # カバレッジ
+    response_time: 0.7      # 応答時間重視（continuousの連続報酬を活かす）
+    coverage: 0.2           # カバレッジ
     workload_balance: 0.1   # 負荷バランス
 
 # -------------------------------------------------------------------
@@ -70,18 +70,20 @@ data:
   
   # 学習期間（軽症系が多い期間と繁忙期の両方を含む）
   train_periods:
-    - start_date: "20230701"
-      end_date: "20230831"
-  
+    - start_date: "20230615"
+      end_date: "20230615"
+    # - start_date: "20231201"
+    #   end_date: "20240131"
+
   eval_periods:
-    - start_date: "20240701"
-      end_date: "20240831"
+    - start_date: "20230615"
+      end_date: "20230615"
 
 # -------------------------------------------------------------------
 # PPOハイパーパラメータ (軽症系学習に最適化)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 5000
+  n_episodes: 3000
   batch_size: 1024
   
   # 学習率
@@ -167,7 +169,7 @@ reward:
   
   # エピソード報酬
   episode:
-    base_penalty_per_minute: -0.3
+    base_penalty_per_minute: -1.0
     achievement_bonuses:
       # 重症系（直近隊運用の結果を評価）
       severe_6min_rate: 50.0            # 重症系6分以内率ボーナス
@@ -198,12 +200,12 @@ teacher:
 # -------------------------------------------------------------------
 # ネットワーク設定 (config_tokyo23.yamlから継承)
 # -------------------------------------------------------------------
-network:
-  state_encoder:
-    spatial_features: 16
-    temporal_features: 8
-    ambulance_features: 8
-    incident_features: 6
+# network:
+#   state_encoder:
+#     spatial_features: 16
+#     temporal_features: 8
+#     ambulance_features: 8
+#     incident_features: 6
   
   actor:
     hidden_layers: [256, 128]

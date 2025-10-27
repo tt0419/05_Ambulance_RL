@@ -33,9 +33,7 @@ data:
     enabled: false
     area_name: "default"
     districts: []
-    num_ambulances_in_area: 100
-    state_dim: 527
-    action_dim: 100
+    num_ambulances_in_area: 192
   
   # デフォルト期間（個別設定で上書き）
   train_periods:

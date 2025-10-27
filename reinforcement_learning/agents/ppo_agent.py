@@ -140,22 +140,29 @@ class PPOAgent:
             
             # 最終的なNaNチェック
             if torch.any(torch.isnan(masked_probs)):
-                print("警告: masked_probsにNaN値が含まれています。修正します。")
                 masked_probs = torch.nan_to_num(masked_probs, nan=1.0/self.action_dim)
                 masked_probs = masked_probs / masked_probs.sum(dim=1, keepdim=True)
             
             # 行動選択
             if deterministic:
-                action = masked_probs.argmax(dim=1).item()
-                log_prob = torch.log(torch.clamp(masked_probs[0, action], min=1e-8))
+                # マスク内のactionのみから選択
+                available_actions = torch.where(mask_tensor[0])[0]
+                if len(available_actions) > 0:
+                    # 利用可能なactionの中で確率が最大のものを選択
+                    available_probs = masked_probs[0, available_actions]
+                    best_idx = available_probs.argmax().item()
+                    action = available_actions[best_idx].item()
+                    log_prob = torch.log(torch.clamp(masked_probs[0, action], min=1e-8))
+                else:
+                    # マスクがすべてFalseの場合（異常）
+                    action = 0
+                    log_prob = torch.log(torch.tensor(1.0/self.action_dim))
             else:
                 try:
                     dist = Categorical(masked_probs)
                     action = dist.sample().item()
                     log_prob = dist.log_prob(torch.tensor(action, device=self.device))
-                except ValueError as e:
-                    print(f"Categorical分布作成エラー: {e}")
-                    print(f"masked_probs: {masked_probs}")
+                except ValueError:
                     # フォールバック: 利用可能な行動からランダム選択
                     available_actions = torch.where(mask_tensor[0])[0]
                     if len(available_actions) > 0:

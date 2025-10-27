@@ -5,7 +5,7 @@
 # 実験設定
 # ================================================================
 experiment:
-  name: "ppo_continuous_reward_v1"
+  name: "ppo_continuous_reward_oneday_v1"
   seed: 42
   device: "cuda"  # GPUがない場合は "cpu"
 
@@ -15,21 +15,21 @@ experiment:
 data:
   # 2023年で学習（3つの代表的な時期）
   train_periods:
-    - start_date: "20230401"
-      end_date: "20230430"    # 4月（平常期）
-    - start_date: "20230801"
-      end_date: "20230831"    # 8月（夏季繁忙期）
+    - start_date: "20230701"
+      end_date: "20230831"    # 4月（平常期）
     - start_date: "20231201"
-      end_date: "20231231"    # 12月（冬季繁忙期）
+      end_date: "20240130"    # 8月（夏季繁忙期）
+    # - start_date: "20231201"
+    #   end_date: "20231231"    # 12月（冬季繁忙期）
   
   # 2024年同月で評価（公平な評価）
   eval_periods:
-    - start_date: "20240401"
-      end_date: "20240407"    # 4月評価（1週間）
-    - start_date: "20240801"
-      end_date: "20240807"    # 8月評価（1週間）
-    - start_date: "20241201"
-      end_date: "20241207"    # 12月評価（1週間）
+    - start_date: "20240701"
+      end_date: "20240831"    # 4月評価（1週間）
+    # - start_date: "20240801"
+    #   end_date: "20240807"    # 8月評価（1週間）
+    # - start_date: "20241201"
+    #   end_date: "20241207"    # 12月評価（1週間）
   
   episode_duration_hours: 24  # 1日単位のエピソード
 
@@ -40,30 +40,30 @@ severity:
   categories:
     critical:
       conditions: ["重篤", "重症", "死亡"]
-      reward_weight: 5.0
+      reward_weight: 1.0
       time_limit_seconds: 360  # 6分目標
       
     moderate:
       conditions: ["中等症"]
-      reward_weight: 2.0
-      time_limit_seconds: 780  # 13分目標
+      reward_weight: 1.0
+      time_limit_seconds: 600  # 13分目標
       
     mild:
       conditions: ["軽症"]
       reward_weight: 1.0
-      time_limit_seconds: 780  # 13分目標
+      time_limit_seconds: 600  # 13分目標
       
   thresholds:
     golden_time: 360   # 6分（重症系目標）
-    standard_time: 780 # 13分（全体目標）
+    standard_time: 600 # 13分（全体目標）
 
 # ================================================================
 # PPOハイパーパラメータ（大規模実験用）
 # ================================================================
 ppo:
-  n_episodes: 3000      # デスクトップPCで実行可能な規模
-  n_epochs: 10          # 各データバッチを10回学習
-  batch_size: 128       # GPU向けのバッチサイズ
+  n_episodes: 5000      # デスクトップPCで実行可能な規模
+  n_epochs: 6          # 各データバッチを10回学習
+  batch_size: 1024       # GPU向けのバッチサイズ
   
   # PPO基本パラメータ
   clip_epsilon: 0.2     # 標準的な値
@@ -73,7 +73,7 @@ ppo:
   # 学習率設定
   learning_rate:
     actor: 0.0003       # Actor学習率
-    critic: 0.0003      # Critic学習率
+    critic: 0.001      # Critic学習率
     scheduler: "cosine" # 学習率スケジューラ
     
   # 探索と安定化
@@ -97,14 +97,14 @@ reward:
       penalty_scale: 3.0 # 6分超過時のペナルティスケール
       
     moderate:
-      target: 13         # 目標時間（分）
+      target: 10         # 目標時間（分）
       max_bonus: 30      # 中等症のボーナス（控えめ）
-      penalty_scale: 1.0 # 13分超過時のペナルティ
+      penalty_scale: 5.0 # 13分超過時のペナルティ
       
     mild:
-      target: 13         # 目標時間（分）
+      target: 10         # 目標時間（分）
       max_bonus: 10      # 軽症のボーナス（最小）
-      penalty_scale: 0.3 # 軽症のペナルティ（緩い）
+      penalty_scale: 3.0 # 軽症のペナルティ（緩い）
   
   # 従来の設定（連続報酬では使われないが互換性のため残す）
   weights:
@@ -122,30 +122,20 @@ reward:
 # ネットワーク構造
 # ================================================================
 network:
-  # 状態エンコーダ
-  state_encoder:
-    incident_features: 8      # 事案の特徴量
-    ambulance_features: 8     # 救急車の特徴量
-    spatial_features: 16      # 空間的特徴量
-    temporal_features: 8      # 時間的特徴量
-    
-  # Actor Network（行動を決定）
   actor:
-    hidden_layers: [256, 128, 64]  # 3層のニューラルネット
-    activation: "relu"
-    dropout: 0.1
-    
-  # Critic Network（価値を推定）
+    hidden_layers: [256, 128]
+    activation: relu
+    initialization: xavier_uniform
   critic:
-    hidden_layers: [256, 128]      # 2層のニューラルネット
-    activation: "relu"
-    dropout: 0.1
+    hidden_layers: [256, 128]
+    activation: relu
+    init_scale: 0.001
 
 # ================================================================
 # 教師あり学習設定
 # ================================================================
 teacher:
-  enabled: true         # 教師あり学習を使用
+  enabled: false         # 教師あり学習を使用
   initial_prob: 0.5     # 初期は50%の確率で教師に従う
   final_prob: 0.1       # 最終的に10%まで減少
   decay_episodes: 1500  # 1500エピソードかけて減衰
@@ -154,8 +144,8 @@ teacher:
 # 評価設定
 # ================================================================
 evaluation:
-  interval: 50          # 50エピソードごとに評価
-  n_eval_episodes: 20   # 評価時は20エピソード実行
+  interval: 100  # 評価間隔を短く
+  n_eval_episodes: 5
   eval_deterministic: false  # 確率的な評価
   
   # 評価メトリクス（重要な2つに絞る）
