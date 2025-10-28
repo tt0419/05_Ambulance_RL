@@ -5,7 +5,7 @@
 # 実験設定
 # ================================================================
 experiment:
-  name: "ppo_continuous_reward_oneday_v1"
+  name: "ppo_continuous_reward_oneday_test"
   seed: 42
   device: "cuda"  # GPUがない場合は "cpu"
 
@@ -15,21 +15,25 @@ experiment:
 data:
   # 2023年で学習（3つの代表的な時期）
   train_periods:
-    - start_date: "20230701"
-      end_date: "20230831"    # 4月（平常期）
-    - start_date: "20231201"
-      end_date: "20240130"    # 8月（夏季繁忙期）
+    # - start_date: "20230701"
+    #   end_date: "20230831"    # 4月（平常期）
+    # - start_date: "20231201"
+    #   end_date: "20240130"    # 8月（夏季繁忙期）
     # - start_date: "20231201"
     #   end_date: "20231231"    # 12月（冬季繁忙期）
+    - start_date: "20230615"
+      end_date: "20230615"
   
   # 2024年同月で評価（公平な評価）
   eval_periods:
-    - start_date: "20240701"
-      end_date: "20240831"    # 4月評価（1週間）
+    # - start_date: "20240701"
+    #   end_date: "20240831"    # 4月評価（1週間）
     # - start_date: "20240801"
     #   end_date: "20240807"    # 8月評価（1週間）
     # - start_date: "20241201"
     #   end_date: "20241207"    # 12月評価（1週間）
+    - start_date: "20230615"
+      end_date: "20230615"
   
   episode_duration_hours: 24  # 1日単位のエピソード
 
@@ -61,7 +65,7 @@ severity:
 # PPOハイパーパラメータ（大規模実験用）
 # ================================================================
 ppo:
-  n_episodes: 5000      # デスクトップPCで実行可能な規模
+  n_episodes: 1000      # デスクトップPCで実行可能な規模
   n_epochs: 6          # 各データバッチを10回学習
   batch_size: 1024       # GPU向けのバッチサイズ
   
@@ -135,10 +139,10 @@ network:
 # 教師あり学習設定
 # ================================================================
 teacher:
-  enabled: false         # 教師あり学習を使用
-  initial_prob: 0.5     # 初期は50%の確率で教師に従う
+  enabled: true         # 教師あり学習を使用
+  initial_prob: 0.8     # 初期は50%の確率で教師に従う
   final_prob: 0.1       # 最終的に10%まで減少
-  decay_episodes: 1500  # 1500エピソードかけて減衰
+  decay_episodes: 200  # 1500エピソードかけて減衰
 
 # ================================================================
 # 評価設定
@@ -171,7 +175,7 @@ training:
   # 早期停止
   early_stopping:
     enabled: true
-    patience: 500             # 500エピソード改善なしで停止
+    patience: 50              # 50エピソード改善なしで停止
     min_delta: 0.01          # 最小改善幅
     min_episodes: 1000       # 最低1000エピソードは実行
     
@@ -187,9 +191,7 @@ training:
 # ================================================================
 metadata:
   description: "連続報酬関数による重症案件RT短縮実験"
-  author: "研究者名"
-  date: "2025-01-20"
+  date: "2025-10-28"
   notes: |
-    - 重症の6分到達率向上を最優先
-    - 軽症・中等症のRTは許容範囲内で犠牲可
-    - 連続報酬により滑らかな学習を期待
+    - ems_environment.pyの改変をした結果、適切に学習が収束しなくなってしまった。
+    - oneday環境に戻しただけでは学習が収束しないので、教師あり学習を導入した。

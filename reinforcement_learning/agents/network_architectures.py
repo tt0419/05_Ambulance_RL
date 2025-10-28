@@ -31,7 +31,7 @@ class ActorNetwork(nn.Module):
         
         if self.use_modular_encoder:
             # 設定から救急車数を取得（デフォルト16）
-            num_ambulances = config.get('num_ambulances', 16)
+            num_ambulances = config.get('num_ambulances', 192)
             self.state_encoder = ModularStateEncoder(max_ambulances=num_ambulances)
             encoded_dim = self.state_encoder.output_dim  # 96次元
         else:

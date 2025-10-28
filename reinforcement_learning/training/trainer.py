@@ -201,9 +201,21 @@ class PPOTrainer:
         else:
             teacher_prob = 0.0
         
+        step = 0  # ステップカウンターを初期化
         while True:
             # 行動選択
             action_mask = self.env.get_action_mask()
+            
+            # デバッグ：action_maskのチェック
+            if not hasattr(self, '_mask_warning_count'):
+                self._mask_warning_count = 0
+            if not np.any(action_mask) and self._mask_warning_count < 3:
+                available_count = sum(1 for st in self.env.ambulance_states.values() if st['status'] == 'available')
+                print(f"\n[trainer.py デバッグ {self._mask_warning_count+1}/3] 行動選択時のaction_mask全てFalse:")
+                print(f"  ステップ: {step}, available救急車: {available_count}/{len(self.env.ambulance_states)}")
+                print(f"  現在時刻: {self.env.episode_step_seconds}秒")
+                self._mask_warning_count += 1
+            
             optimal_action = self.env.get_optimal_action() if teacher_prob > 0 else None
             
             # 教師あり学習の判定
@@ -290,6 +302,7 @@ class PPOTrainer:
                 )
             
             state = next_state
+            step += 1  # ステップカウンターをインクリメント
             
             if done:
                 break
@@ -305,6 +318,27 @@ class PPOTrainer:
         # ハイブリッドモードの場合は追加統計も含める
         if self.hybrid_mode:
             env_stats['hybrid_episode_stats'] = episode_stats
+        
+        # 全車出動中の統計を表示（ログファイルに記録）
+        if env_stats.get('all_busy_count', 0) > 0:
+            print(f"\n  [全車出動中の発生状況]")
+            print(f"    発生回数: {env_stats['all_busy_count']}回")
+            print(f"    合計時間: {env_stats['all_busy_total_duration']:.1f}秒 ({env_stats['all_busy_total_duration']/60:.1f}分)")
+            
+            # 時間帯別の集計
+            events_by_hour = {}
+            for event in env_stats['all_busy_events']:
+                hour = event['hour']
+                if hour not in events_by_hour:
+                    events_by_hour[hour] = {'count': 0, 'total_duration': 0}
+                events_by_hour[hour]['count'] += 1
+                events_by_hour[hour]['total_duration'] += event['duration']
+            
+            print(f"    時間帯別:")
+            for hour in sorted(events_by_hour.keys()):
+                count = events_by_hour[hour]['count']
+                duration = events_by_hour[hour]['total_duration']
+                print(f"      {hour:2d}時台: {count}回, {duration:.0f}秒 ({duration/60:.1f}分)")
         
         return episode_reward, episode_length, env_stats
     

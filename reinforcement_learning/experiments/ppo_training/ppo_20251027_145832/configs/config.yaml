@@ -25,7 +25,7 @@ evaluation:
   - closest
   - severity_based
   eval_deterministic: false
-  interval: 100
+  interval: 5
   metrics:
   - critical_6min_rate
   - achieved_13min_rate
@@ -35,7 +35,7 @@ evaluation:
 experiment:
   description: 救急車配車最適化
   device: cuda
-  name: ppo_continuous_reward_oneday_v1
+  name: ppo_continuous_reward_busydays78-121-78_test
   seed: 42
 hybrid_mode:
   coverage_evaluation:
@@ -101,7 +101,7 @@ ppo:
     critic: 0.001
     scheduler: cosine
   max_grad_norm: 0.5
-  n_episodes: 5000
+  n_episodes: 50
   n_epochs: 6
   target_kl: 0.02
   value_loss_coeff: 0.5

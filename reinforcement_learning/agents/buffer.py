@@ -72,10 +72,26 @@ class RolloutBuffer:
                 print(f"警告: action_maskの次元が不一致: {action_mask.shape[0]} != {self.action_dim}")
                 action_mask = np.ones(self.action_dim, dtype=bool)
             
-            # 全てFalseの場合の警告
+            # 全てFalseの場合の処理
+            # 注意：全車出動中の場合、実際にはどの救急車も選択できない状態
+            # しかし学習のため、選択されたactionは有効だったと仮定してマスクを設定
             if not np.any(action_mask):
-                print("警告: action_maskが全てFalseです。全てTrueに修正します。")
-                action_mask = np.ones(self.action_dim, dtype=bool)
+                if not hasattr(self, '_all_busy_count'):
+                    self._all_busy_count = 0
+                self._all_busy_count += 1
+                
+                if self._all_busy_count == 1:
+                    print(f"\n[buffer.py 情報] 全車出動中の状態を検出しました。")
+                    print(f"  このような状況では、選択されたactionのみを有効として記録します。")
+                    print(f"  （以降のメッセージは抑制されます）")
+                
+                # 選択されたactionのみを有効とする（実際には全車出動中だが学習のため）
+                action_mask = np.zeros(self.action_dim, dtype=bool)
+                if 0 <= action < self.action_dim:
+                    action_mask[action] = True
+                else:
+                    # actionが無効な場合のみ、全てTrueにする（フォールバック）
+                    action_mask = np.ones(self.action_dim, dtype=bool)
                 
             self.action_masks[self.pos] = action_mask
         else:
