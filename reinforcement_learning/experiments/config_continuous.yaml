@@ -5,7 +5,7 @@
 # 実験設定
 # ================================================================
 experiment:
-  name: "ppo_continuous_reward_oneday_test"
+  name: "ppo_continuous_reward_oneday"
   seed: 42
   device: "cuda"  # GPUがない場合は "cpu"
 
@@ -65,7 +65,7 @@ severity:
 # PPOハイパーパラメータ（大規模実験用）
 # ================================================================
 ppo:
-  n_episodes: 1000      # デスクトップPCで実行可能な規模
+  n_episodes: 3000      # デスクトップPCで実行可能な規模
   n_epochs: 6          # 各データバッチを10回学習
   batch_size: 1024       # GPU向けのバッチサイズ
   
@@ -139,7 +139,7 @@ network:
 # 教師あり学習設定
 # ================================================================
 teacher:
-  enabled: true         # 教師あり学習を使用
+  enabled: false         # 教師あり学習を使用
   initial_prob: 0.8     # 初期は50%の確率で教師に従う
   final_prob: 0.1       # 最終的に10%まで減少
   decay_episodes: 200  # 1500エピソードかけて減衰

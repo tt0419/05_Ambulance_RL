@@ -87,9 +87,11 @@ class StateEncoder:
         features.append(incident_features)
         
         # 3. 時間的特徴量
+        # ★ Stage 3: current_timeを渡す（存在する場合）
         temporal_features = self._encode_temporal(
             state_dict.get('episode_step', 0),
-            state_dict.get('time_of_day', 12)
+            state_dict.get('time_of_day', 12),
+            current_time=state_dict.get('current_time')  # ← 追加
         )
         features.append(temporal_features)
         
@@ -199,13 +201,30 @@ class StateEncoder:
         
         return features
     
-    def _encode_temporal(self, episode_step: int, time_of_day: float) -> np.ndarray:
-        """時間的特徴量をエンコード"""
+    def _encode_temporal(self, episode_step: int, time_of_day: float, current_time: float = None) -> np.ndarray:
+        """
+        時間的特徴量をエンコード
+        
+        【Stage 3改修】current_time（連続時間）対応：
+        - current_timeが渡された場合は、それを使用してエピソード進行度を計算
+        - 後方互換性のため、episode_stepも引き続きサポート
+        
+        Args:
+            episode_step: エピソードのステップ数（後方互換性用）
+            time_of_day: 時刻（時間単位）
+            current_time: 現在時刻（秒単位、オプション）
+        """
         features = np.zeros(self.temporal_features)
         
-        # エピソード進行度
-        max_steps = self.config.get('data', {}).get('episode_duration_hours', 24) * 60
-        features[0] = min(episode_step / max_steps, 1.0)
+        # ★ Stage 3: エピソード進行度の計算
+        if current_time is not None:
+            # current_timeが渡された場合は、秒単位で進行度を計算
+            episode_duration_seconds = self.config.get('data', {}).get('episode_duration_hours', 24) * 3600
+            features[0] = min(current_time / episode_duration_seconds, 1.0)
+        else:
+            # 後方互換性：episode_stepベースの計算
+            max_steps = self.config.get('data', {}).get('episode_duration_hours', 24) * 60
+            features[0] = min(episode_step / max_steps, 1.0) if max_steps > 0 else 0.0
         
         # 時刻（周期的エンコーディング）
         hour = time_of_day % 24

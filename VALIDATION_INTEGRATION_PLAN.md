@@ -1,8 +1,46 @@
-# ValidationSimulator完全統合計画書
+# ValidationSimulator完全統合計画書（修正版）
+
+**⚠️ 重要な更新**: 他のLLMからの評価を受けて、実用機能の統合を最優先とする方針に変更しました。
+
+---
 
 ## 📋 目的
 
 現在のPPO学習環境(`ems_environment.py`)とValidationSimulatorの環境差を解消し、学習精度と検証精度を一致させる。
+
+## 🔄 計画の修正点（2024年10月28日更新）
+
+### 当初の計画の問題点
+- ✅ イベント駆動アーキテクチャの設計は理論的に正しい
+- ❌ **PPO学習に必須の実用機能が大幅に欠落**
+  - RewardDesigner（報酬計算）
+  - ハイブリッドモード（重症/軽症の振り分け）
+  - get_episode_statistics（統計収集）
+  - get_optimal_action（最適行動の取得）
+  - render（可視化）
+
+### 修正後の方針
+```
+┌─────────────────────────────────────────┐
+│ 優先順位1: 既存の実用機能を100%維持     │
+│ ├─ RewardDesigner                       │
+│ ├─ DispatchLogger                       │
+│ ├─ ハイブリッドモード                   │
+│ ├─ 統計収集機能                         │
+│ └─ 学習補助メソッド                     │
+└─────────────────────────────────────────┘
+            ↓ 統合
+┌─────────────────────────────────────────┐
+│ 優先順位2: イベント駆動コアの追加       │
+│ ├─ heapqによる優先度付きキュー          │
+│ ├─ 連続時間管理                         │
+│ └─ イベント処理ループ                   │
+└─────────────────────────────────────────┘
+```
+
+**実装アプローチ**:
+- ❌ ゼロから新規実装
+- ✅ **既存のems_environment.pyをベースに、イベント駆動機能を追加**
 
 ## 🎯 達成目標
 
@@ -90,58 +128,277 @@
 
 ---
 
-## 📝 実装計画（5段階）
+## 📝 実装計画（修正版：既存機能統合型）
 
-### Phase 1: イベント駆動コアの実装 ⭐ 最優先
+### ⚠️ 重要な認識修正
 
-**目的**: ValidationSimulatorと同じ時間管理システムの導入
+**当初の設計案の問題点**:
+- イベント駆動アーキテクチャは理論的に正しいが、**実用機能が大幅に欠落**
+- RewardDesigner、ハイブリッドモード、統計機能などPPO学習に必須の機能が未実装
+- 「設計の青写真」であり、そのままでは学習を実行できない
+
+**修正方針**:
+```
+✅ 正しいアプローチ: イベント駆動 + 既存実用機能の統合
+❌ 誤ったアプローチ: 理想的な設計だけで実用機能を無視
+```
+
+---
+
+### Phase 1: イベント駆動コア + 既存機能の統合 ⭐ 最優先
+
+**目的**: ValidationSimulatorと同じ時間管理 + PPO学習に必要な全機能
 
 **実装内容**:
+
+#### 1-A. イベント駆動システムの基礎
 ```python
-# 1. イベントクラスの定義
+# イベントクラスの定義
 @dataclass
 class Event:
     time: float              # イベント発生時刻（秒）
     event_type: EventType    # NEW_CALL, AMBULANCE_RETURN, etc.
     data: Dict[str, Any]    # イベント固有データ
 
-# 2. イベントキューの管理
+# イベントキューの管理
 self.event_queue = []  # heapq
 self.current_time = 0.0  # 連続時間
+```
 
-# 3. イベント処理ループ
-def _process_next_event(self):
-    event = heapq.heappop(self.event_queue)
-    self.current_time = event.time  # 時間を進める
+#### 1-B. 既存の実用機能を統合（★重要★）
+
+**移植元**: `reinforcement_learning/environment/ems_environment.py`（現行版）
+
+**必須で移植すべきメソッド**:
+
+1. **初期化関連**（`__init__`に追加）:
+```python
+# RewardDesignerの初期化（既存コードそのまま使用）
+from .reward_designer import RewardDesigner
+self.reward_designer = RewardDesigner(self.config)
+
+# DispatchLoggerの初期化
+from .dispatch_logger import DispatchLogger  
+self.dispatch_logger = DispatchLogger(enabled=True)
+
+# ハイブリッドモードの設定
+self.hybrid_mode = self.config.get('hybrid_mode', {}).get('enabled', False)
+if self.hybrid_mode:
+    self.severe_conditions = self.config.get('hybrid_mode', {}).get(
+        'severity_classification', {}
+    ).get('severe_conditions', ['重症', '重篤', '死亡'])
+    self.direct_dispatch_count = 0
+    self.ppo_dispatch_count = 0
+    print("✓ ハイブリッドモード有効")
+```
+
+2. **報酬計算**（現行版の`_calculate_reward_detailed`をそのまま移植）:
+```python
+def _calculate_reward_detailed(self, response_time_minutes, severity):
+    """
+    目標時間やカバレッジを考慮した、より詳細な報酬関数。
     
-    if event.event_type == EventType.AMBULANCE_RETURN:
-        # 救急車を復帰させる
-        self.ambulance_states[event.data['ambulance_id']]['status'] = 'available'
+    ★既存のems_environment.pyから完全移植★
+    """
+    reward = 10.0  # 基本報酬
+    if is_severe_condition(severity):  # 重症系
+        if response_time_minutes <= 6.0: 
+            reward += 20.0  # 6分以内ボーナス
+        else: 
+            reward -= min((response_time_minutes - 6.0) * 2.0, 30.0)
+    else:  # 軽症系
+        if response_time_minutes <= 13.0: 
+            reward += 5.0
+        else: 
+            reward -= min((response_time_minutes - 13.0) * 0.5, 10.0)
+    
+    # カバレッジボーナス
+    available_ratio = sum(
+        1 for s in self.ambulance_states.values() if s['status'] == 'available'
+    ) / self.action_dim
+    if available_ratio > 0.3: 
+        reward += 5.0 * available_ratio
+    
+    return reward
+```
+
+3. **ハイブリッドモードのロジック**（`step`メソッドに組み込む）:
+```python
+def step(self, action: int):
+    """
+    PPO学習用のステップ実行（ハイブリッドモード対応）
+    """
+    # 事案が存在しない場合の処理
+    if self.pending_call is None:
+        self._advance_to_next_call()
+    
+    if self.pending_call is None:
+        return self._get_observation(), 0.0, True, {}
+    
+    current_incident = self.pending_call
+    
+    # ★ハイブリッドモード: 重症系は直近隊を強制★
+    if self.hybrid_mode and is_severe_condition(current_incident['severity']):
+        # 直近隊を選択
+        action_to_take = self.get_optimal_action()
+        self.direct_dispatch_count += 1
+        
+        # 配車実行
+        reward, info = self._execute_dispatch(action_to_take, current_incident)
+        reward = 0.0  # 学習対象外なので報酬は0
+        info['dispatch_type'] = 'direct_closest'
+        info['skipped_learning'] = True
+    else:
+        # PPOで学習
+        action_to_take = action
+        self.ppo_dispatch_count += 1
+        
+        # 配車実行
+        reward, info = self._execute_dispatch(action_to_take, current_incident)
+        info['dispatch_type'] = 'ppo_learning'
+    
+    # 次の事案へ進む
+    self._advance_to_next_call()
+    
+    observation = self._get_observation()
+    done = self._is_episode_done()
+    info['episode_stats'] = self.get_episode_statistics()
+    
+    return observation, reward, done, info
+```
+
+4. **学習補助メソッド**（現行版からそのまま移植）:
+```python
+def get_optimal_action(self) -> Optional[int]:
+    """
+    現在の事案に対し、最も早く到着できる救急車を返す
+    
+    ★既存のems_environment.pyから完全移植★
+    """
+    if not self.pending_call: 
+        return None
+    
+    best_action, min_time = None, float('inf')
+    for amb_id, state in self.ambulance_states.items():
+        if state['status'] == 'available':
+            time = self._get_travel_time(
+                state['current_h3'], 
+                self.pending_call['h3_index'], 
+                'response'
+            )
+            if time < min_time: 
+                min_time, best_action = time, amb_id
+    
+    return best_action
+
+def render(self, mode='human'):
+    """
+    環境の現在の状態を表示
+    
+    ★既存のems_environment.pyから完全移植★
+    """
+    if mode == 'human':
+        print(f"\n--- Time: {self.current_time/3600.0:.2f}h ---")
+        if self.pending_call: 
+            print(f"  Incident: {self.pending_call['severity']} at {self.pending_call['h3_index']}")
+        available = sum(1 for s in self.ambulance_states.values() if s['status'] == 'available')
+        print(f"  Available Ambulances: {available}/{self.action_dim}")
+
+def get_episode_statistics(self) -> Dict:
+    """
+    エピソード統計を取得
+    
+    ★元のems_environment1027.pyから完全移植★
+    詳細な統計情報を返す（約50行のメソッド）
+    """
+    # ... 既存の実装をそのまま使用 ...
+    pass
+```
+
+5. **現実的な初期化**（`reset`メソッドで使用）:
+```python
+def _initialize_ambulances_realistic(self):
+    """
+    現実的な救急車初期化処理
+    
+    ★既存のems_environment.pyから完全移植★
+    一部の救急車が活動中の状態を再現
+    """
+    self.ambulance_states = {}
+    
+    for amb_id, (_, row) in enumerate(self.ambulance_data.iterrows()):
+        if amb_id >= self.action_dim:
+            break
+        
+        station_h3 = h3.latlng_to_cell(row['latitude'], row['longitude'], 9)
+        
+        # 50-70%の確率で初期活動中とする
+        is_busy = np.random.uniform() < np.random.uniform(0.5, 0.7)
+        
+        self.ambulance_states[amb_id] = {
+            'status': 'dispatched' if is_busy else 'available',
+            'completion_time': self.current_time + np.random.uniform(0, 1800) if is_busy else 0,
+            'current_h3': station_h3,
+            'station_h3': station_h3,
+            'calls_today': 1 if is_busy else 0
+        }
+        
+        # ★イベント駆動: 初期活動中の救急車の復帰イベントをスケジュール★
+        if is_busy:
+            return_event = Event(
+                time=self.ambulance_states[amb_id]['completion_time'],
+                event_type=EventType.AMBULANCE_RETURN,
+                data={'ambulance_id': amb_id}
+            )
+            self._schedule_event(return_event)
+    
+    available_count = sum(1 for st in self.ambulance_states.values() if st['status'] == 'available')
+    print(f"  救急車初期化完了: {len(self.ambulance_states)}台 (available: {available_count}台)")
 ```
 
 **期待効果**:
 - ✅ 全車出動中問題の解消（50-72回 → 10回以下）
-- ✅ 救急車の正確な復帰タイミング
-- ✅ 事案間での状態更新の保証
+- ✅ PPO学習に必要な全機能が動作
+- ✅ ハイブリッドモードの継続動作
+- ✅ 既存のトレーニングスクリプトとの互換性維持
 
 **修正ファイル**:
-- `reinforcement_learning/environment/ems_environment.py` (全面改修)
+- `reinforcement_learning/environment/ems_environment_v2.py`（新規作成）
+  - 既存の`ems_environment.py`をベースに、イベント駆動コアを統合
 
 **検証方法**:
 ```python
-# テストスクリプト
-env = EMSEnvironment(...)
-obs = env.reset()
-
-# 全車出動中の発生回数をカウント
-all_busy_count = 0
-for step in range(1000):
-    mask = env.get_action_mask()
-    if not mask.any():
-        all_busy_count += 1
-    # ...
-
-print(f"全車出動中: {all_busy_count}回")  # 目標: 10回以下
+# test_integrated_environment.py
+def test_all_features():
+    """統合環境の全機能テスト"""
+    env = ValidationIntegratedEMSEnvironment(...)
+    
+    # 1. イベント駆動の動作確認
+    env.reset()
+    assert len(env.event_queue) > 0, "イベントキューが空"
+    
+    # 2. ハイブリッドモードの動作確認
+    if env.hybrid_mode:
+        # 重症事案で直近隊が選択されるか
+        pass
+    
+    # 3. 報酬計算の動作確認
+    obs, reward, done, info = env.step(0)
+    assert 'dispatch_type' in info, "dispatch_typeが欠落"
+    
+    # 4. 統計情報の取得確認
+    stats = env.get_episode_statistics()
+    assert 'response_times' in stats, "統計情報が不完全"
+    
+    # 5. 全車出動中の頻度確認
+    all_busy_count = 0
+    for _ in range(1000):
+        if not env.get_action_mask().any():
+            all_busy_count += 1
+        env.step(np.random.choice(np.where(env.get_action_mask())[0]))
+    
+    assert all_busy_count < 10, f"全車出動中が多すぎる: {all_busy_count}回"
+    print("✅ 全機能テスト合格")
 ```
 
 ---
@@ -303,54 +560,338 @@ def _calculate_reward(self, response_time_min, severity):
 
 ---
 
-## 🔧 実装手順（ステップバイステップ）
+## 🔧 実装手順（修正版：既存機能優先統合）
 
-### Step 1: 新ファイルの作成と基本構造の実装
+### Step 1: 既存ファイルのベースコピーと基本構造の追加
 
 ```bash
-# 設計ドキュメントから実装ファイルを作成
-cp reinforcement_learning/environment/ems_environment_v2_design.py \
+# 既存の実装をベースに新しいファイルを作成
+cp reinforcement_learning/environment/ems_environment.py \
    reinforcement_learning/environment/ems_environment_v2.py
 ```
 
 **実装内容**:
-1. イベントクラスの定義
-2. イベントキューの管理機能
-3. 基本的なイベント処理ループ
+
+1. **イベントクラスの追加**（ファイル冒頭に追加）:
+```python
+import heapq
+from enum import Enum
+from dataclasses import dataclass
+
+class EventType(Enum):
+    NEW_CALL = "new_call"
+    AMBULANCE_RETURN = "ambulance_return"
+    EPISODE_END = "episode_end"
+
+@dataclass
+class Event:
+    time: float
+    event_type: EventType
+    data: Dict[str, Any]
+    
+    def __lt__(self, other):
+        return self.time < other.time
+```
+
+2. **`__init__`メソッドに追加**:
+```python
+# イベントキューの初期化
+self.event_queue = []
+self.current_time = 0.0
+
+# ★既存の初期化コードはそのまま維持★
+# RewardDesigner、DispatchLogger、hybrid_modeなど
+```
+
+3. **イベント管理メソッドの追加**（クラスの末尾に追加）:
+```python
+def _schedule_event(self, event: Event):
+    """イベントをキューに追加"""
+    heapq.heappush(self.event_queue, event)
+
+def _process_next_event(self) -> Optional[Event]:
+    """次のイベントを処理"""
+    if not self.event_queue:
+        return None
+    
+    event = heapq.heappop(self.event_queue)
+    old_time = self.current_time
+    self.current_time = event.time
+    
+    if event.event_type == EventType.AMBULANCE_RETURN:
+        self._handle_ambulance_return_event(event)
+    elif event.event_type == EventType.NEW_CALL:
+        self._handle_new_call_event(event)
+    
+    return event
+
+def _handle_ambulance_return_event(self, event: Event):
+    """救急車復帰イベントの処理"""
+    ambulance_id = event.data['ambulance_id']
+    if ambulance_id in self.ambulance_states:
+        self.ambulance_states[ambulance_id]['status'] = 'available'
+        self.ambulance_states[ambulance_id]['current_h3'] = \
+            self.ambulance_states[ambulance_id]['station_h3']
+
+def _handle_new_call_event(self, event: Event):
+    """新規事案イベントの処理"""
+    self.pending_call = event.data
+```
+
+**チェックリスト**:
+- ☑ イベントクラスの定義完了
+- ☑ イベントキューの初期化完了
+- ☑ 基本的なイベント処理メソッドの追加完了
+- ☑ 既存の初期化コード（RewardDesigner、DispatchLogger等）が維持されている
+
+**期間**: 半日
+
+---
+
+### Step 2: `reset()`メソッドの改修（イベント駆動対応）
+
+**実装内容**:
+
+1. **イベントキューのリセット処理を追加**:
+```python
+def reset(self) -> np.ndarray:
+    """エピソードのリセット（イベント駆動版）"""
+    # イベントキューとタイマーのクリア
+    self.event_queue = []
+    self.current_time = 0.0
+    
+    # ★既存のリセット処理はそのまま維持★
+    # 期間選択、データ読み込みなど
+    periods = (self.config['data']['train_periods'] if self.mode == "train" 
+              else self.config['data']['eval_periods'])
+    period = periods[np.random.randint(len(periods))]
+    calls_df = self.data_cache.get_period_data(period['start_date'], period['end_date'])
+    self.current_episode_calls = self._prepare_episode_calls(calls_df, ...)
+    
+    if not self.current_episode_calls:
+        return np.zeros(self.state_dim)
+    
+    self.episode_start_time = self.current_episode_calls[0]['datetime']
+    
+    # ★新規追加: 全事案をイベントとしてスケジュール★
+    for call in self.current_episode_calls:
+        event_time = (call['datetime'] - self.episode_start_time).total_seconds()
+        event = Event(
+            time=event_time,
+            event_type=EventType.NEW_CALL,
+            data=call
+        )
+        self._schedule_event(event)
+    
+    # エピソード終了イベント
+    episode_duration_sec = self.config['data']['episode_duration_hours'] * 3600
+    end_event = Event(
+        time=episode_duration_sec,
+        event_type=EventType.EPISODE_END,
+        data={}
+    )
+    self._schedule_event(end_event)
+    
+    # ★既存の救急車初期化を維持（イベントスケジューリングを追加）★
+    self._initialize_ambulances_realistic()
+    
+    # 統計のリセット（既存）
+    self._reset_statistics()
+    
+    # 最初の事案まで進める
+    self._advance_to_next_call()
+    
+    return self._get_observation()
+```
+
+2. **`_initialize_ambulances_realistic()`の改修**:
+```python
+def _initialize_ambulances_realistic(self):
+    """現実的な救急車初期化（イベント駆動対応版）"""
+    self.ambulance_states = {}
+    
+    for amb_id, (_, row) in enumerate(self.ambulance_data.iterrows()):
+        if amb_id >= self.action_dim:
+            break
+        
+        station_h3 = h3.latlng_to_cell(row['latitude'], row['longitude'], 9)
+        is_busy = np.random.uniform() < np.random.uniform(0.5, 0.7)
+        
+        self.ambulance_states[amb_id] = {
+            'status': 'dispatched' if is_busy else 'available',
+            'completion_time': self.current_time + np.random.uniform(0, 1800) if is_busy else 0,
+            'current_h3': station_h3,
+            'station_h3': station_h3,
+            'calls_today': 1 if is_busy else 0
+        }
+        
+        # ★新規追加: 初期活動中の救急車の復帰イベントをスケジュール★
+        if is_busy:
+            return_event = Event(
+                time=self.ambulance_states[amb_id]['completion_time'],
+                event_type=EventType.AMBULANCE_RETURN,
+                data={'ambulance_id': amb_id}
+            )
+            self._schedule_event(return_event)
+    
+    available_count = sum(1 for st in self.ambulance_states.values() if st['status'] == 'available')
+    print(f"  救急車初期化完了: {len(self.ambulance_states)}台 (available: {available_count}台)")
+```
+
+**チェックリスト**:
+- ☑ `reset()`でイベントキューをクリア
+- ☑ 全事案をイベントとしてスケジュール
+- ☑ 初期活動中の救急車の復帰イベントをスケジュール
+- ☑ 既存のデータ読み込みロジックが維持されている
+
+**期間**: 半日
+
+---
+
+### Step 3: `step()`メソッドの改修（イベント駆動 + ハイブリッドモード）
+
+**実装内容**:
+
+```python
+def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict]:
+    """
+    PPO学習用のステップ実行（イベント駆動 + ハイブリッドモード対応）
+    """
+    # 事案が存在しない場合、次の事案まで進める
+    if self.pending_call is None:
+        self._advance_to_next_call()
+    
+    if self.pending_call is None:
+        return self._get_observation(), 0.0, True, {}
+    
+    current_incident = self.pending_call
+    
+    # ★ハイブリッドモード（既存ロジックを維持）★
+    if self.hybrid_mode and is_severe_condition(current_incident['severity']):
+        # 重症系: 直近隊を強制
+        action_to_take = self.get_optimal_action()
+        self.direct_dispatch_count += 1
+        dispatch_type = 'direct_closest'
+        skipped_learning = True
+    else:
+        # 軽症系: PPOで学習
+        action_to_take = action
+        self.ppo_dispatch_count += 1
+        dispatch_type = 'ppo_learning'
+        skipped_learning = False
+    
+    # マスクチェック
+    mask = self.get_action_mask()
+    if not mask[action_to_take]:
+        # 無効なアクションの場合、有効なアクションからランダム選択
+        valid_actions = np.where(mask)[0]
+        if len(valid_actions) > 0:
+            action_to_take = np.random.choice(valid_actions)
+        else:
+            # 全車出動中
+            return self._get_observation(), -100.0, False, {
+                'success': False,
+                'reason': 'all_busy'
+            }
+    
+    # ★配車実行（既存の詳細計算を使用）★
+    total_time_sec, details = self._calculate_ambulance_completion_time(
+        action_to_take, current_incident
+    )
+    
+    # 救急車を出動中状態に更新
+    self.ambulance_states[action_to_take]['status'] = 'dispatched'
+    self.ambulance_states[action_to_take]['calls_today'] += 1
+    
+    # ★新規追加: 復帰イベントをスケジュール★
+    return_time = self.current_time + total_time_sec
+    return_event = Event(
+        time=return_time,
+        event_type=EventType.AMBULANCE_RETURN,
+        data={'ambulance_id': action_to_take}
+    )
+    self._schedule_event(return_event)
+    
+    # ★報酬計算（既存のRewardDesignerを使用）★
+    if skipped_learning:
+        reward = 0.0  # 学習対象外
+    else:
+        reward = self._calculate_reward_detailed(
+            details['response_time'], 
+            current_incident['severity']
+        )
+    
+    # 統計の更新（既存）
+    details['severity'] = current_incident['severity']
+    self._update_statistics(details)
+    
+    # 次の事案へ進む
+    self._advance_to_next_call()
+    
+    observation = self._get_observation()
+    done = self._is_episode_done()
+    
+    info = {
+        'success': True,
+        'ambulance_id': action_to_take,
+        'response_time': details['response_time'],
+        'dispatch_type': dispatch_type,
+        'skipped_learning': skipped_learning,
+        'episode_stats': self.get_episode_statistics()
+    }
+    
+    return observation, reward, done, info
+```
+
+**チェックリスト**:
+- ☑ ハイブリッドモードのロジックが維持されている
+- ☑ 復帰イベントが正しくスケジュールされる
+- ☑ 既存の報酬計算（RewardDesigner）が使用されている
+- ☑ 既存の統計更新が動作している
 
 **期間**: 1日
 
 ---
 
-### Step 2: ValidationSimulator互換コンポーネントの移植
+### Step 4: `_advance_to_next_call()`メソッドの改修
 
 **実装内容**:
-1. フェーズ別移動時間行列の読み込み
-2. ServiceTimeGeneratorの統合
-3. 病院選択モデルの統合
 
-**修正箇所**:
-- `_load_travel_time_matrices()`: 3つの行列を読み込む
-- `_get_travel_time_by_phase()`: フェーズ指定対応
-- `_calculate_ambulance_activity_time()`: 詳細計算
+```python
+def _advance_to_next_call(self):
+    """
+    次の事案イベントまでシミュレーションを進める（イベント駆動版）
+    
+    重要: 事案間で発生する救急車復帰イベントを全て処理
+    """
+    self.pending_call = None
+    
+    # 次のNEW_CALLイベントまでイベントを処理
+    while self.event_queue:
+        next_event = self.event_queue[0]  # peek
+        
+        if next_event.event_type == EventType.NEW_CALL:
+            # 次の事案に到達
+            self._process_next_event()
+            break
+        elif next_event.event_type == EventType.EPISODE_END:
+            # エピソード終了
+            self._process_next_event()
+            break
+        else:
+            # 救急車復帰などの中間イベントを処理
+            self._process_next_event()
+```
 
-**期間**: 2日
+**チェックリスト**:
+- ☑ 事案間で救急車復帰イベントが処理される
+- ☑ エピソード終了イベントが正しく処理される
+
+**期間**: 半日
 
 ---
 
-### Step 3: PPO学習インターフェースの実装
-
-**実装内容**:
-1. `step()` メソッドの実装
-2. `reset()` メソッドの実装
-3. `get_action_mask()` の実装
-4. 事案イベントのスケジューリング
-
-**期間**: 2日
-
----
-
-### Step 4: 単体テストと統合テスト
+### Step 5: 統合テストと検証
 
 ```python
 # test_ems_environment_v2.py
@@ -604,6 +1145,130 @@ A: アーキテクチャレベルでは一致しますが、乱数シードの�
 **Q4: 実装にどのくらいの期間がかかるか？**
 
 A: 段階的実装で3-4週間を想定しています。Phase 1（イベント駆動コア）が最も重要で、1週間程度で完了予定です。
+
+---
+
+---
+
+## 📌 実装の優先順位マトリックス
+
+### 必須コンポーネント（Phase 1で完全実装）
+
+| コンポーネント | 移植元 | 役割 | 実装難易度 |
+|--------------|--------|------|-----------|
+| **RewardDesigner** | `ems_environment.py` L93 | 報酬計算 | ★☆☆ (そのまま使用) |
+| **DispatchLogger** | `ems_environment.py` L94 | ログ記録 | ★☆☆ (そのまま使用) |
+| **ハイブリッドモード** | `ems_environment.py` L96-100 | 重症/軽症振り分け | ★★☆ (step()に統合) |
+| **get_optimal_action** | `ems_environment.py` L402-410 | 最適行動取得 | ★☆☆ (そのまま使用) |
+| **get_episode_statistics** | `ems_environment1027.py` L1428-1478 | 統計収集 | ★☆☆ (そのまま使用) |
+| **_initialize_ambulances_realistic** | `ems_environment.py` L314-336 | 現実的初期化 | ★★☆ (イベント追加) |
+| **render** | `ems_environment.py` L412-420 | 可視化 | ★☆☆ (そのまま使用) |
+
+### 新規追加コンポーネント（イベント駆動）
+
+| コンポーネント | 役割 | 実装難易度 |
+|--------------|------|-----------|
+| **Event, EventType** | イベント定義 | ★☆☆ (データクラス) |
+| **event_queue** | イベントキュー | ★☆☆ (heapq使用) |
+| **_schedule_event** | イベント追加 | ★☆☆ (heappush) |
+| **_process_next_event** | イベント処理 | ★★☆ (ループ制御) |
+| **_handle_ambulance_return_event** | 救急車復帰処理 | ★☆☆ (状態更新) |
+| **_advance_to_next_call** (改修) | 事案間イベント処理 | ★★★ (ロジック統合) |
+
+### 実装の3段階アプローチ
+
+```
+┌─────────────────────────────────────────────────┐
+│ Stage 1: 基礎（半日）                            │
+│ ├─ イベントクラス定義                           │
+│ ├─ イベントキュー初期化                         │
+│ └─ 基本イベント処理メソッド                     │
+│    → 既存機能は100%維持                         │
+└─────────────────────────────────────────────────┘
+            ↓ テスト・検証
+┌─────────────────────────────────────────────────┐
+│ Stage 2: 統合（1.5日）                          │
+│ ├─ reset()メソッドの改修                        │
+│ ├─ step()メソッドの改修                         │
+│ └─ _advance_to_next_call()の改修                │
+│    → イベント駆動 + 既存機能の融合              │
+└─────────────────────────────────────────────────┘
+            ↓ テスト・検証
+┌─────────────────────────────────────────────────┐
+│ Stage 3: 最適化（1日）                          │
+│ ├─ フェーズ別移動時間行列の活用                 │
+│ ├─ ServiceTimeGeneratorの統合                   │
+│ └─ 性能検証と微調整                             │
+│    → ValidationSimulatorとの一致度検証          │
+└─────────────────────────────────────────────────┘
+```
+
+---
+
+## 🚨 実装時の重要な注意事項
+
+### ❌ やってはいけないこと
+
+1. **既存メソッドの削除や大幅変更**
+   - `_calculate_reward_detailed` は絶対に変更しない
+   - `get_episode_statistics` のロジックを保持
+   - `hybrid_mode` の振り分けロジックを維持
+
+2. **新規設計による実装**
+   - "きれいな設計"を優先して既存機能を無視しない
+   - 理想的なアーキテクチャより、動作する統合を優先
+
+3. **テストなしの大規模変更**
+   - 各Stageで必ず動作確認
+   - 既存機能が壊れていないか検証
+
+### ✅ やるべきこと
+
+1. **既存コードの最大限の再利用**
+   - コピー&ペーストを積極的に活用
+   - 動いているコードは変更しない
+
+2. **段階的な統合**
+   - イベントクラス追加 → テスト
+   - reset()改修 → テスト
+   - step()改修 → テスト
+
+3. **後方互換性の維持**
+   - 既存のトレーニングスクリプトが動作すること
+   - 既存の設定ファイル（config.yaml）が使えること
+
+---
+
+## 📝 実装チェックリスト
+
+### Phase 1完了時の確認項目
+
+- [ ] イベントクラス（Event, EventType）が定義されている
+- [ ] `__init__`でイベントキューが初期化されている
+- [ ] `_schedule_event`, `_process_next_event`が実装されている
+- [ ] RewardDesignerが初期化され、動作している
+- [ ] DispatchLoggerが初期化され、動作している
+- [ ] hybrid_modeの設定が読み込まれている
+- [ ] get_optimal_actionがそのまま使用可能
+- [ ] get_episode_statisticsがそのまま使用可能
+- [ ] renderがそのまま使用可能
+
+### Phase 2完了時の確認項目
+
+- [ ] reset()で全事案がイベントとしてスケジュールされる
+- [ ] reset()で初期活動中の救急車の復帰イベントがスケジュールされる
+- [ ] step()でハイブリッドモードが正しく動作する
+- [ ] step()で復帰イベントが正しくスケジュールされる
+- [ ] _advance_to_next_call()で事案間のイベントが処理される
+- [ ] 全車出動中の頻度が10回以下/エピソードになっている
+
+### Phase 3完了時の確認項目
+
+- [ ] フェーズ別移動時間行列が使用されている
+- [ ] ServiceTimeGeneratorが統合されている
+- [ ] ValidationSimulatorとの応答時間差が±10%以内
+- [ ] 既存のトレーニングスクリプトが動作する
+- [ ] 学習が正常に収束する
 
 ---
 

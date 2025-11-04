@@ -24,16 +24,16 @@ data:
   
   train_periods:
     - start_date: "20230615"
-      end_date: "20230621"
+      end_date: "20230615"
   
   eval_periods:
-    - start_date: "20230622"
-      end_date: "20230622"
+    - start_date: "20230615"
+      end_date: "20230615"
   
   max_steps_per_episode: 3000
 
 ppo:
-  n_episodes: 200  # まず200エピソードでクイックテスト
+  n_episodes: 1000  # まず200エピソードでクイックテスト
   batch_size: 1024
   n_epochs: 6
   clip_epsilon: 0.1

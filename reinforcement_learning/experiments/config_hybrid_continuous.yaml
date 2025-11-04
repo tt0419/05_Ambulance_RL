@@ -40,11 +40,11 @@ hybrid_mode:
     severe_conditions: ["重症", "重篤", "死亡"]  # 直近隊運用（学習対象外）
     mild_conditions: ["軽症", "中等症"]           # PPO学習対象
   
-  # # ハイブリッドモード内の報酬重み付け
-  # reward_weights:
-  #   response_time: 0.7      # 応答時間重視（continuousの連続報酬を活かす）
-  #   coverage: 0.2           # カバレッジ
-  #   workload_balance: 0.1   # 負荷バランス
+  # ハイブリッドモード内の報酬重み付け
+  reward_weights:
+    response_time: 0.7      # 応答時間重視（continuousの連続報酬を活かす）
+    coverage: 0.2           # カバレッジ
+    workload_balance: 0.1   # 負荷バランス
 
 # -------------------------------------------------------------------
 # データ設定 (config_tokyo23.yamlから継承)
@@ -70,14 +70,18 @@ data:
   
   # 学習期間（軽症系が多い期間と繁忙期の両方を含む）
   train_periods:
-    - start_date: "20230701"
-      end_date: "20230831"
-    - start_date: "20231201"
-      end_date: "20240131"
+    # - start_date: "20230701"
+    #   end_date: "20230831"
+    # - start_date: "20231201"
+    #   end_date: "20240131"
+    - start_date: "20230615"
+      end_date: "20230615"
 
   eval_periods:
-    - start_date: "20240701"
-      end_date: "20240831"
+    # - start_date: "20240701"
+    #   end_date: "20240831"
+    - start_date: "20230615"
+      end_date: "20230615"
 
 # -------------------------------------------------------------------
 # PPOハイパーパラメータ (軽症系学習に最適化)
@@ -127,19 +131,19 @@ reward:
         target: 6
         max_bonus: 50.0
         penalty_scale: 5.0
-        weight: 5.0
+        weight: 1.0
       
       # 中等症（PPO学習対象）
       moderate:
-        target: 10 # 改善: 目標を13分から10分に短縮し、より早い到着を促す
+        target: 13 # 改善: 目標を13分から10分に短縮し、より早い到着を促す
         # 廃止: 報酬の飽和を防ぎ、目標時間より早く到着するインセンティブを線形に維持するためコメントアウト
         # max_bonus: 20.0
         penalty_scale: 2.5 # 変更: 目標10分達成のためペナルティスケールを少し強化
-        weight: 2.0
+        weight: 1.0
       
       # 軽症（PPO学習対象）
       mild:
-        target: 10 # 改善: 目標を13分から10分に短縮
+        target: 13 # 改善: 目標を13分から10分に短縮
         # 廃止: 報酬の飽和を防ぐ
         # max_bonus: 10.0
         penalty_scale: 1.0 # 変更: 中等症よりはペナルティを緩やかにするが、以前(0.5)よりは強化
@@ -293,12 +297,12 @@ severity:
   categories:
     critical:
       conditions: ["重症", "重篤", "死亡"]
-      reward_weight: 5.0
+      reward_weight: 1.0
       time_limit_seconds: 360
     
     moderate:
       conditions: ["中等症"]
-      reward_weight: 2.0
+      reward_weight: 1.0
       time_limit_seconds: 780
     
     mild:

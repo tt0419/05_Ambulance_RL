@@ -84,10 +84,10 @@ EXPERIMENT_CONFIG = {
             'time_limit_seconds': 780
         },
         'ppo_agent': {
-            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251026_093329/checkpoints/best_model.pth',
+            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251103_104732/checkpoints/best_model.pth',
             # 'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251021_193942/final_model.pth',
             # config_path: 設定ファイルのパス（オプション、存在しない場合はチェックポイントから読み込む）
-            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251026_093329/configs/config.json',
+            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251103_104732/configs/config.json',
             'hybrid_mode': False,
             'severe_conditions': ['重症', '重篤', '死亡'],
             'mild_conditions': ['軽症', '中等症']
@@ -1148,8 +1148,8 @@ if __name__ == "__main__":
     # ============================================================
     EXPERIMENT_PARAMS = {
         # 期間指定（ランダムサンプリング）
-        'start_date': "20240701",
-        'end_date': "20240831",  # 1ヶ月間
+        'start_date': "20230615",
+        'end_date': "20230615",  # 1ヶ月間
         
         # エピソード設定
         'episode_duration_hours': 24,  # 24時間エピソード
