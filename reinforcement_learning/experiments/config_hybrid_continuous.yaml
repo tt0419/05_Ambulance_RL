@@ -18,8 +18,8 @@ data_paths:
   travel_time_matrix: "data/tokyo/calibration2/linear_calibrated_response.npy"
 
 experiment:
-  name: "hybrid_ppo_cont_oneday_v2"
-  description: "報酬設計をシンプルかつ滑らかに変更"
+  name: "hybrid_ppo_cont_oneday_v5"
+  description: "v4は全滅しているのでrename,救急隊復帰メソッドと教師あり学習の修正"
   seed: 42
   device: cuda
 
@@ -203,12 +203,12 @@ reward:
 # continuousモードでは使用していないため
 # -------------------------------------------------------------------
 teacher:
-  enabled: false
+  enabled: true
   strategy: closest
   apply_to: ["軽症", "中等症"]
-  initial_prob: 0.0
-  final_prob: 0.0
-  decay_episodes: 2000
+  initial_prob: 0.90
+  final_prob: 0.05
+  decay_episodes: 3000
 
 # -------------------------------------------------------------------
 # ネットワーク設定 (config_tokyo23.yamlから継承)

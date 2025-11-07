@@ -604,20 +604,6 @@ class EMSEnvironment:
         self.unhandled_calls = []  # 対応不能になった事案のリスト
         self.call_start_times = {}  # 事案の発生時刻記録
         
-        # タイムアウト統計の初期化
-        if not hasattr(self, 'timeout_stats'):
-            self.timeout_stats = {
-                '重篤': 0,
-                '重症': 0,
-                '中等症': 0,
-                '軽症': 0,
-                'total': 0
-            }
-        else:
-            # リセット
-            for key in self.timeout_stats:
-                self.timeout_stats[key] = 0
-        
         # ★★★【イベントキューへの事案追加】★★★
         # 全ての事案をNEW_CALLイベントとしてキューに追加
         
@@ -643,18 +629,8 @@ class EMSEnvironment:
         
         # ★★★【イベントキュー追加ここまで】★★★
         
-        # ★★★【重要】pending_callは空のままにする★★★
-        # step()の最初でイベント処理してpending_callを設定する
+        # 最初の事案を設定（pending_callはstep内で設定）
         self.pending_call = None
-        
-        # デバッグ出力
-        if self._episode_count <= 1:  # 最初のエピソードのみ
-            print(f"\n[RESET DEBUG]")
-            print(f"  current_episode_calls数: {len(self.current_episode_calls)}")
-            print(f"  event_queue数: {len(self.event_queue)}")
-            if self.event_queue:
-                print(f"  最初のイベント時刻: {self.event_queue[0].time}秒")
-                print(f"  最初のイベントタイプ: {self.event_queue[0].event_type}")
         
         # 初期観測を返す
         return self._get_observation()
@@ -825,41 +801,16 @@ class EMSEnvironment:
         
         print(f"有効な事案数: {len(episode_calls)}件")
         
-        # ★★★ 追加: H3インデックスの検証 ★★★
-        invalid_h3_count = 0
-        valid_h3_count = 0
-        
-        for call in episode_calls:
-            call_h3 = call.get('h3_index')
-            if call_h3 and call_h3 in self.grid_mapping:
-                valid_h3_count += 1
-            else:
-                invalid_h3_count += 1
-                # 最初の5件のみ詳細を表示
-                if invalid_h3_count <= 5:
-                    print(f"[WARN] 事案{call.get('id')}のH3インデックスが不正またはgrid_mappingに存在しません: {call_h3}")
-        
-        # 検証結果のサマリー
-        total_calls = len(episode_calls)
-        if total_calls > 0:
-            valid_rate = (valid_h3_count / total_calls) * 100
-            print(f"\nH3インデックス検証結果:")
-            print(f"  有効な事案: {valid_h3_count}/{total_calls} ({valid_rate:.1f}%)")
-            if invalid_h3_count > 0:
-                print(f"  無効な事案: {invalid_h3_count}/{total_calls} ({(invalid_h3_count/total_calls)*100:.1f}%)")
-                print(f"  → [WARNING] 無効な事案では教師あり学習が機能しません")
-        
         return episode_calls
     
     def _initialize_ambulances_realistic(self):
         """
-        現実的な救急車初期化処理（H3検証追加版）
+        現実的な救急車初期化処理（VALIDATION_INTEGRATION_PLAN.md準拠）
         
         エピソード開始時に、一部の救急車が活動中の状態を再現し、
         それらの復帰イベントをイベントキューにスケジュールします。
         """
         self.ambulance_states = {}
-        invalid_amb_h3_count = 0
         print(f"  救急車データから現実的初期化開始: {len(self.ambulance_data)}台")
         
         for amb_id, (_, row) in enumerate(self.ambulance_data.iterrows()):
@@ -873,12 +824,6 @@ class EMSEnvironment:
                 if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
                     continue
                 station_h3 = h3.latlng_to_cell(lat, lng, 9)
-                
-                # ★★★ H3検証を追加 ★★★
-                if station_h3 not in self.grid_mapping:
-                    invalid_amb_h3_count += 1
-                    if invalid_amb_h3_count <= 5:
-                        print(f"  [WARN] 救急車{amb_id}のH3がgrid_mappingに存在しません: {station_h3}")
                 
                 # 50-70%の確率で初期活動中とする
                 is_busy = np.random.uniform() < np.random.uniform(0.5, 0.7)
@@ -914,95 +859,12 @@ class EMSEnvironment:
                 print(f"    ❌ 救急車{amb_id}の初期化でエラー: {e}")
                 continue
 
-        # H3検証結果
-        if invalid_amb_h3_count > 0:
-            total_amb = len(self.ambulance_states)
-            print(f"  [WARN] {invalid_amb_h3_count}台の救急車のH3がgrid_mappingに存在しません")
-            print(f"    → これらの救急車では移動時間計算が不正確になる可能性があります")
-
         available_count = sum(1 for st in self.ambulance_states.values() if st['status'] == 'available')
         print(f"  救急車初期化完了: {len(self.ambulance_states)}台 (初期利用可能: {available_count}台)")
-    
-    def advance_time(self) -> None:
-        """
-        時間を進めてイベントを処理（配車は行わない）
-        
-        このメソッドは教師あり学習のために追加されました。
-        trainer.pyで以下の順序で呼び出されます：
-        1. advance_time()  # イベント処理、pending_call設定
-        2. get_optimal_action()  # pending_callが存在する
-        3. step(action)  # 配車処理のみ
-        """
-        end_time = self.current_time_seconds + self.time_per_step
-        
-        # デバッグ（最初の3ステップのみ）
-        if self.episode_step <= 3:
-            print(f"\n[ADVANCE_TIME] ステップ{self.episode_step}開始")
-            print(f"  current_time: {self.current_time_seconds}秒")
-        
-        # --- 0. タイムアウトチェック ---
-        if self.pending_call is not None:
-            wait_time_seconds = self.current_time_seconds - self.call_start_times.get(
-                self.pending_call['id'], self.current_time_seconds
-            )
-            max_wait_seconds = self._get_max_wait_time(self.pending_call['severity']) * 60
-            
-            if wait_time_seconds > max_wait_seconds:
-                print(f"[TIMEOUT] ステップ{self.episode_step}: 事案{self.pending_call['id']}({self.pending_call['severity']})を{wait_time_seconds/60:.1f}分待機でタイムアウト")
-                self._handle_unresponsive_call(self.pending_call, wait_time_seconds / 60)
-                self.pending_call = None
-        
-        # --- 1. イベント処理 ---
-        events_processed = 0
-        new_calls_processed = 0
-        
-        while self.event_queue and self.event_queue[0].time <= end_time:
-            event = self.event_queue[0]
-            
-            # 復帰イベントは常に処理
-            if event.event_type == EventType.AMBULANCE_AVAILABLE:
-                self._process_next_event()
-                events_processed += 1
-                continue
-            
-            # NEW_CALLイベント
-            if event.event_type == EventType.NEW_CALL:
-                if self.pending_call is None:
-                    self._process_next_event()
-                    events_processed += 1
-                    new_calls_processed += 1
-                else:
-                    break
-            else:
-                self._process_next_event()
-                events_processed += 1
-        
-        # デバッグ
-        if self.episode_step <= 3:
-            print(f"  イベント処理: {events_processed}件（NEW_CALL: {new_calls_processed}件）")
-            print(f"  pending_call: {'あり' if self.pending_call else 'なし'}")
-        
-        # --- 2. 時間を進める ---
-        self.current_time_seconds = end_time
-        self.episode_step += 1
-        
-        # フラグを設定（step()で使用）
-        self._time_advanced_externally = True
-        
-        # 監視ログ
-        if self.episode_step % 100 == 0 and self._episode_count <= 1:
-            available_count = sum(1 for a in self.ambulance_states.values() if a['status'] == 'available')
-            print(f"\n[監視] ステップ{self.episode_step}（{self.current_time_seconds/60:.0f}分）")
-            print(f"  利用可能救急車: {available_count}台")
-            print(f"  pending_call: {'あり' if self.pending_call else 'なし'}")
     
     def step(self, action: int) -> StepResult:
         """
         環境のステップ実行（固定時間ステップ制: 1ステップ=1分=60秒）
-        
-        動作モード:
-        1. advance_time()が事前に呼ばれている場合: 配車処理のみ
-        2. そうでない場合: 時間を進めてから配車処理（後方互換性）
         
         Args:
             action: 選択された救急車のインデックス
@@ -1011,26 +873,36 @@ class EMSEnvironment:
             StepResult: 観測、報酬、終了フラグ、追加情報
         """
         try:
-            # フラグをチェック: advance_time()が呼ばれていなければ内部で呼ぶ
-            if not getattr(self, '_time_advanced_externally', False):
-                self.advance_time()
-            
-            # フラグをリセット
-            self._time_advanced_externally = False
+            # 1ステップ = 60秒を進める
+            start_time = self.current_time_seconds
+            end_time = start_time + self.time_per_step
             
             reward = 0.0
             info = {}
             
-            # デバッグ（最初の3ステップのみ）
-            if self.episode_step <= 3:
-                print(f"\n[STEP] ステップ{self.episode_step}: 配車処理")
-                print(f"  pending_call: {'あり' if self.pending_call else 'なし'}")
+            # --- 1. この1分間に発生する全イベントを処理 ---
+            # ★ 重要: 復帰イベントは必ず処理、NEW_CALLは1件のみ処理 ★
+            while self.event_queue and self.event_queue[0].time <= end_time:
+                event = self.event_queue[0]  # 次のイベントを確認（まだpopしない）
+                
+                # 復帰イベントは常に処理
+                if event.event_type == EventType.AMBULANCE_AVAILABLE:
+                    self._process_next_event()
+                    continue
+                
+                # NEW_CALLイベントの処理
+                if event.event_type == EventType.NEW_CALL:
+                    # 既にpending_callがある場合、新しい事案は次のステップで処理
+                    if self.pending_call is not None:
+                        break
+                    # pending_callが空なら、この事案を処理
+                    self._process_next_event()
+                    # (self.pending_callがセットされる)
+                else:
+                    # その他のイベント（将来の拡張用）
+                    self._process_next_event()
             
             # --- 2. エージェントの行動（配車）を処理 ---
-            # デバッグ
-            if self.episode_step <= 3:
-                print(f"  配車処理開始: pending_call={'あり' if self.pending_call else 'なし'}")
-            
             if self.pending_call is not None:
                 current_incident = self.pending_call
                 
@@ -1079,23 +951,8 @@ class EMSEnvironment:
                     )
                     self._schedule_event(return_event)
                     
-                    # デバッグ: 復帰イベントのスケジュール（最初の10件）
-                    if not hasattr(self, '_return_schedule_count'):
-                        self._return_schedule_count = 0
-                    
-                    if self._return_schedule_count < 10:
-                        self._return_schedule_count += 1
-                        print(f"[復帰スケジュール] 救急車{amb_id}:")
-                        print(f"  現在時刻: {self.current_time_seconds/60:.1f}分")
-                        print(f"  復帰予定: {return_time/60:.1f}分")
-                        print(f"  活動時間: {(return_time - self.current_time_seconds)/60:.1f}分")
-                    
                     # 成功したので事案をクリア
                     self.pending_call = None
-                    
-                    # デバッグ
-                    if self.episode_step <= 3:
-                        print(f"  配車成功: pending_callをクリア")
                     
                 else:
                     # 配車失敗時の処理（例: 利用可能台数0）
@@ -1116,6 +973,11 @@ class EMSEnvironment:
                         'retry_next_step': True
                     })
             
+            # --- 3. 時間を60秒の終わりまで進める ---
+            # (注: ループで時間が進んでいるため、end_timeで上書きする)
+            self.current_time_seconds = end_time
+            self.episode_step += 1
+            
             # エピソード終了判定
             done = self._is_episode_done()
             
@@ -1124,8 +986,7 @@ class EMSEnvironment:
             
             info.update({
                 'episode_stats': self.episode_stats.copy(),
-                'step': self.episode_step,
-                'timeout_stats': self.timeout_stats.copy() if hasattr(self, 'timeout_stats') else {}
+                'step': self.episode_step
             })
             
             return StepResult(
@@ -1149,41 +1010,22 @@ class EMSEnvironment:
     def get_optimal_action(self) -> Optional[int]:
         """
         現在の事案に対して最適な救急車を選択（最近接）
-        デバッグ強化版: Noneを返す原因を特定
+        ValidationSimulatorのfind_closest_available_ambulanceと同じロジック
         
         Returns:
             最適な救急車のID、または None
         """
-        # ★★★ デバッグ: メソッドが呼ばれたことを確認 ★★★
-        if hasattr(self, '_debug_call_count'):
-            self._debug_call_count += 1
-        else:
-            self._debug_call_count = 1
-        
-        if self._debug_call_count <= 3:
-            print(f"\n[get_optimal_action DEBUG] Call #{self._debug_call_count}")
-            print(f"  pending_call is None: {self.pending_call is None}")
-            if self.pending_call:
-                print(f"  pending_call.h3_index: {self.pending_call.get('h3_index')}")
-        
         if self.pending_call is None:
-            if self._debug_call_count <= 3:
-                print(f"  [RETURN] None (pending_call is None)")
             return None
         
         best_action = None
         min_travel_time = float('inf')
-        available_count = 0
-        error_count = 0
-        error_details = []
         
         # 全ての救急車をチェック
         for amb_id, amb_state in self.ambulance_states.items():
             # 利用可能な救急車のみ対象
             if amb_state['status'] != 'available':
                 continue
-            
-            available_count += 1
             
             try:
                 # 現在位置から事案発生地点への移動時間を計算
@@ -1198,48 +1040,8 @@ class EMSEnvironment:
                     best_action = amb_id
                     
             except Exception as e:
-                error_count += 1
-                if error_count <= 3:  # 最初の3件のみ記録
-                    error_details.append({
-                        'amb_id': amb_id,
-                        'amb_h3': amb_state.get('current_h3'),
-                        'error': str(e)
-                    })
+                # エラーが発生した場合はスキップ
                 continue
-        
-        # ★★★ デバッグ: Noneを返す場合の詳細情報 ★★★
-        if best_action is None and available_count > 0:
-            print(f"\n{'='*60}")
-            print(f"[CRITICAL] get_optimal_actionがNoneを返しました")
-            print(f"{'='*60}")
-            print(f"available救急車数: {available_count}台")
-            print(f"エラー発生数: {error_count}件")
-            print(f"pending_call.h3_index: {self.pending_call.get('h3_index')}")
-            
-            # H3インデックスの検証
-            call_h3 = self.pending_call.get('h3_index')
-            if call_h3:
-                in_mapping = call_h3 in self.grid_mapping
-                print(f"事案H3がgrid_mappingに存在: {in_mapping}")
-                if not in_mapping:
-                    print(f"  → [ERROR] 事案のH3インデックスが不正: {call_h3}")
-            
-            # 救急車のH3も確認（最初の3台）
-            checked_count = 0
-            for amb_id, amb_state in self.ambulance_states.items():
-                if amb_state['status'] == 'available' and checked_count < 3:
-                    amb_h3 = amb_state.get('current_h3')
-                    in_mapping = amb_h3 in self.grid_mapping if amb_h3 else False
-                    print(f"救急車{amb_id} H3={amb_h3}, grid_mappingに存在={in_mapping}")
-                    checked_count += 1
-            
-            # エラー詳細
-            if error_details:
-                print(f"\nエラー詳細（最初の3件）:")
-                for detail in error_details:
-                    print(f"  救急車{detail['amb_id']}: {detail['error']}")
-            
-            print(f"{'='*60}\n")
         
         # デバッグ情報の出力（verboseモード時）
         if best_action is not None and hasattr(self, 'verbose_logging') and self.verbose_logging:
@@ -1452,12 +1254,11 @@ class EMSEnvironment:
     
     def _calculate_ambulance_completion_time(self, ambulance_id: int, call: Dict, response_time: float) -> float:
         """救急車の活動完了時間を計算（秒単位、ValidationSimulator互換）"""
-        # ★★★ 修正: 事案の発生時刻を基準にする ★★★
-        call_start_time = self.call_start_times.get(call['id'], self.current_time_seconds)
+        current_time = self.current_time_seconds  # 現在時刻（秒単位）
         severity = call['severity']
         
-        # 1. 現場到着時刻 = 事案発生時刻 + 応答時間（秒）
-        arrive_scene_time = call_start_time + response_time
+        # 1. 現場到着時刻 = 現在時刻 + 応答時間（秒）
+        arrive_scene_time = current_time + response_time
         
         # 2. 現場活動時間（ServiceTimeGeneratorを使用、分単位で返される）
         on_scene_time_minutes = self.service_time_generator.generate_time(severity, 'on_scene_time')
@@ -1489,25 +1290,11 @@ class EMSEnvironment:
         # 9. 最終完了時刻（秒単位）
         completion_time = depart_hospital_time + return_time
         
-        # デバッグ: 活動時間の詳細（最初の10件のみ）
-        if not hasattr(self, '_completion_debug_count'):
-            self._completion_debug_count = 0
-        
-        if self._completion_debug_count < 10:
-            self._completion_debug_count += 1
-            total_activity_time = completion_time - call_start_time
-            print(f"\n[復帰時刻] 救急車{ambulance_id}:")
-            print(f"  事案発生: {call_start_time/60:.1f}分, 配車時刻: {self.current_time_seconds/60:.1f}分")
-            print(f"  応答: {response_time/60:.1f}分, 現場: {on_scene_time/60:.1f}分")
-            print(f"  搬送: {transport_time/60:.1f}分, 病院: {hospital_time/60:.1f}分, 帰署: {return_time/60:.1f}分")
-            print(f"  総活動時間: {total_activity_time/60:.1f}分")
-            print(f"  復帰予定: {completion_time/60:.1f}分")
-        
         if self.verbose_logging:
             print(f"救急車{ambulance_id}活動時間計算（秒単位）:")
             print(f"  応答: {response_time:.1f}秒, 現場: {on_scene_time:.1f}秒")
             print(f"  搬送: {transport_time:.1f}秒, 病院: {hospital_time:.1f}秒, 帰署: {return_time:.1f}秒")
-            print(f"  総活動時間: {(completion_time - call_start_time)/60:.1f}分")
+            print(f"  総活動時間: {(completion_time - current_time)/60:.1f}分")
         
         return completion_time
     
@@ -1746,67 +1533,32 @@ class EMSEnvironment:
     
     def _calculate_travel_time_for_phase(self, from_h3: str, to_h3: str, phase: str = 'response') -> float:
         """
-        指定されたフェーズの移動時間を計算（秒単位、デバッグ強化版）
+        指定されたフェーズの移動時間を計算（秒単位）
         ValidationSimulatorのget_travel_timeと同じロジック
         """
-        # ★★★ デバッグカウンター ★★★
-        if not hasattr(self, '_travel_time_error_count'):
-            self._travel_time_error_count = 0
-            self._travel_time_success_count = 0
-        
         from_idx = self.grid_mapping.get(from_h3)
         to_idx = self.grid_mapping.get(to_h3)
         
         if from_idx is None or to_idx is None:
-            self._travel_time_error_count += 1
-            
-            # 最初の3件のみ詳細ログ
-            if self._travel_time_error_count <= 3:
-                print(f"\n[_calculate_travel_time ERROR #{self._travel_time_error_count}]")
-                print(f"  from_h3: {from_h3}, from_idx: {from_idx}")
-                print(f"  to_h3: {to_h3}, to_idx: {to_idx}")
-                print(f"  phase: {phase}")
-            
+            # グリッドマッピングにない場合のフォールバック
             return 600.0  # デフォルト10分
         
         # 移動時間行列から取得
         current_travel_time_matrix = self.travel_time_matrices.get(phase)
         
         if current_travel_time_matrix is None:
-            self._travel_time_error_count += 1
-            
-            if self._travel_time_error_count <= 3:
-                print(f"\n[_calculate_travel_time ERROR #{self._travel_time_error_count}]")
-                print(f"  travel_time_matrices['{phase}'] is None")
-                print(f"  available phases: {list(self.travel_time_matrices.keys())}")
-            
+            # 指定フェーズの行列がない場合
             return 600.0  # デフォルト10分
         
         try:
             travel_time = current_travel_time_matrix[from_idx, to_idx]
             
-            # 異常値チェック
-            if travel_time <= 0 or travel_time > 3600:
-                self._travel_time_error_count += 1
-                
-                if self._travel_time_error_count <= 3:
-                    print(f"\n[_calculate_travel_time ERROR #{self._travel_time_error_count}]")
-                    print(f"  異常な移動時間: {travel_time}秒")
-                
+            # 異常値チェック（ValidationSimulatorにはないが、安全のため）
+            if travel_time <= 0 or travel_time > 3600:  # 1時間以上は異常
                 return 600.0  # デフォルト10分
             
-            self._travel_time_success_count += 1
             return travel_time
-            
-        except Exception as e:
-            self._travel_time_error_count += 1
-            
-            if self._travel_time_error_count <= 3:
-                print(f"\n[_calculate_travel_time ERROR #{self._travel_time_error_count}]")
-                print(f"  Exception: {e}")
-                print(f"  from_idx: {from_idx}, to_idx: {to_idx}")
-                print(f"  matrix shape: {current_travel_time_matrix.shape}")
-            
+        except:
             return 600.0  # エラー時のデフォルト
     
 
@@ -2080,30 +1832,9 @@ class EMSEnvironment:
         # 重症度別統計の更新
         self._update_unhandled_statistics(unhandled_call)
         
-        # タイムアウト統計の更新
-        if hasattr(self, 'timeout_stats'):
-            self.timeout_stats[severity] = self.timeout_stats.get(severity, 0) + 1
-            self.timeout_stats['total'] = self.timeout_stats.get('total', 0) + 1
-        
-        # 重症度別ペナルティ計算
+        # 重症度別ペナルティ（RewardDesignerに委譲）
         if self.reward_designer:
-            # 基本ペナルティを取得
-            base_penalty = self.reward_designer.get_failure_penalty('unhandled')
-            
-            # 傷病度と待機時間に応じた動的ペナルティ計算
-            severity_multiplier = {
-                '重篤': 3.0,
-                '重症': 2.5,
-                '中等症': 1.5,
-                '軽症': 1.0
-            }.get(severity, 1.0)
-            
-            # 待機時間が長いほどペナルティを増やす（1分あたり-0.5）
-            wait_time_penalty = wait_time * 0.5
-            
-            # 最終ペナルティ
-            penalty = base_penalty * severity_multiplier - wait_time_penalty
-            
+            penalty = self.reward_designer.calculate_unhandled_penalty(call['severity'], wait_time, response_type)
             if not hasattr(self, 'unhandled_penalty_total'):
                 self.unhandled_penalty_total = 0
             self.unhandled_penalty_total += penalty
@@ -2508,31 +2239,11 @@ class EMSEnvironment:
         self.call_start_times[call['id']] = self.current_time_seconds
     
     def _handle_ambulance_return_event(self, event: Event):
-        """救急車復帰イベントの処理（完全修正版）"""
+        """救急車復帰イベントの処理"""
         amb_id = event.data['ambulance_id']
         station_h3 = event.data['station_h3']
         
         if amb_id in self.ambulance_states:
-            # ★★★ 重要: 全ての状態をクリア ★★★
             self.ambulance_states[amb_id]['status'] = 'available'
             self.ambulance_states[amb_id]['current_h3'] = station_h3
-            self.ambulance_states[amb_id]['completion_time'] = 0.0  # ★これがないと次回配車できない★
-            
-            # デバッグログ（最初の10件）
-            if not hasattr(self, '_return_processed_count'):
-                self._return_processed_count = 0
-            
-            if self._return_processed_count < 10:
-                self._return_processed_count += 1
-                available_count = sum(1 for amb in self.ambulance_states.values() 
-                                    if amb['status'] == 'available')
-                print(f"[復帰処理] 救急車{amb_id}が復帰:")
-                print(f"  イベント時刻: {event.time/60:.1f}分")
-                print(f"  現在時刻: {self.current_time_seconds/60:.1f}分")
-                print(f"  利用可能: {available_count}台")
-            
-            # デバッグログ（verbose時のみ）
-            if hasattr(self, 'verbose_logging') and self.verbose_logging:
-                available_count = sum(1 for amb in self.ambulance_states.values() 
-                                    if amb['status'] == 'available')
-                print(f"[復帰] 救急車{amb_id}が復帰 (利用可能: {available_count}台)")
+    # ★★★【イベント処理メソッドここまで】★★★

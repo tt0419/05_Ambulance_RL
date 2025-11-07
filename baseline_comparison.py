@@ -84,11 +84,11 @@ EXPERIMENT_CONFIG = {
             'time_limit_seconds': 780
         },
         'ppo_agent': {
-            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251103_104732/checkpoints/best_model.pth',
+            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251104_191209/checkpoints/best_model.pth',
             # 'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251021_193942/final_model.pth',
             # config_path: 設定ファイルのパス（オプション、存在しない場合はチェックポイントから読み込む）
-            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251103_104732/configs/config.json',
-            'hybrid_mode': False,
+            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251104_191209/configs/config.json',
+            'hybrid_mode': True,
             'severe_conditions': ['重症', '重篤', '死亡'],
             'mild_conditions': ['軽症', '中等症']
         },

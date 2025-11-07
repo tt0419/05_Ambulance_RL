@@ -1271,14 +1271,15 @@ class PPOStrategy(DispatchStrategy):
         }
         
         # 4. 時間情報
-        episode_step = int(context.current_time / 60) if context.current_time else 0
+        # ★ 時間管理の統一: current_timeのみを使用 ★
+        current_time = context.current_time if context.current_time is not None else 0.0
         time_of_day = context.hour_of_day if context.hour_of_day is not None else 12
         
         # 状態辞書を返す
         state_dict = {
             'ambulances': ambulances,
             'pending_call': pending_call,
-            'episode_step': episode_step,
+            'current_time': current_time,  # 秒単位の経過時間
             'time_of_day': time_of_day
         }
         

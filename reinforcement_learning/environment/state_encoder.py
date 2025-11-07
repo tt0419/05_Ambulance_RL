@@ -87,11 +87,10 @@ class StateEncoder:
         features.append(incident_features)
         
         # 3. 時間的特徴量
-        # ★ Stage 3: current_timeを渡す（存在する場合）
+        # ★ 時間管理の統一: current_timeのみを使用 ★
         temporal_features = self._encode_temporal(
-            state_dict.get('episode_step', 0),
             state_dict.get('time_of_day', 12),
-            current_time=state_dict.get('current_time')  # ← 追加
+            current_time=state_dict.get('current_time', 0.0)  # 必須（デフォルト0）
         )
         features.append(temporal_features)
         
@@ -201,30 +200,23 @@ class StateEncoder:
         
         return features
     
-    def _encode_temporal(self, episode_step: int, time_of_day: float, current_time: float = None) -> np.ndarray:
+    def _encode_temporal(self, time_of_day: float, current_time: float) -> np.ndarray:
         """
         時間的特徴量をエンコード
         
-        【Stage 3改修】current_time（連続時間）対応：
-        - current_timeが渡された場合は、それを使用してエピソード進行度を計算
-        - 後方互換性のため、episode_stepも引き続きサポート
+        【時間管理の統一】current_time（連続時間）を必須化：
+        - current_time（秒単位）のみを使用
+        - episode_stepは削除（混乱を避けるため）
         
         Args:
-            episode_step: エピソードのステップ数（後方互換性用）
-            time_of_day: 時刻（時間単位）
-            current_time: 現在時刻（秒単位、オプション）
+            time_of_day: 時刻（時間単位、0-23）
+            current_time: エピソード開始からの経過時間（秒単位、必須）
         """
         features = np.zeros(self.temporal_features)
         
-        # ★ Stage 3: エピソード進行度の計算
-        if current_time is not None:
-            # current_timeが渡された場合は、秒単位で進行度を計算
-            episode_duration_seconds = self.config.get('data', {}).get('episode_duration_hours', 24) * 3600
-            features[0] = min(current_time / episode_duration_seconds, 1.0)
-        else:
-            # 後方互換性：episode_stepベースの計算
-            max_steps = self.config.get('data', {}).get('episode_duration_hours', 24) * 60
-            features[0] = min(episode_step / max_steps, 1.0) if max_steps > 0 else 0.0
+        # エピソード進行度の計算（秒単位、正確）
+        episode_duration_seconds = self.config.get('data', {}).get('episode_duration_hours', 24) * 3600
+        features[0] = min(current_time / episode_duration_seconds, 1.0) if episode_duration_seconds > 0 else 0.0
         
         # 時刻（周期的エンコーディング）
         hour = time_of_day % 24

@@ -203,6 +203,16 @@ class PPOTrainer:
         
         step = 0  # ステップカウンターを初期化
         while True:
+            # ★★★ デバッグ: 教師確率を確認 ★★★
+            if episode_length == 0:  # 最初のステップのみ
+                print(f"\n[TEACHER DEBUG] Episode開始")
+                print(f"  teacher_prob: {teacher_prob:.4f}")
+                print(f"  training: {training}")
+                print(f"  force_teacher: {force_teacher}")
+            
+            # ★★★ 時間を進めてイベント処理（教師あり学習のため） ★★★
+            self.env.advance_time()
+            
             # 行動選択
             action_mask = self.env.get_action_mask()
             
@@ -213,13 +223,48 @@ class PPOTrainer:
                 available_count = sum(1 for st in self.env.ambulance_states.values() if st['status'] == 'available')
                 print(f"\n[trainer.py デバッグ {self._mask_warning_count+1}/3] 行動選択時のaction_mask全てFalse:")
                 print(f"  ステップ: {step}, available救急車: {available_count}/{len(self.env.ambulance_states)}")
-                print(f"  現在時刻: {self.env.episode_step_seconds}秒")
+                print(f"  現在時刻: {self.env.current_time_seconds}秒")
                 self._mask_warning_count += 1
             
             optimal_action = self.env.get_optimal_action() if teacher_prob > 0 else None
             
+            # ★★★ デバッグ: optimal_actionの結果を確認 ★★★
+            if episode_length < 3:  # 最初の3ステップのみ
+                available_count = sum(action_mask)
+                print(f"\n[ACTION DEBUG] Step {episode_length}")
+                print(f"  teacher_prob: {teacher_prob:.4f}")
+                print(f"  teacher_prob > 0: {teacher_prob > 0}")
+                print(f"  get_optimal_action呼び出し: {teacher_prob > 0}")
+                print(f"  optimal_action: {optimal_action}")
+                print(f"  available_count: {available_count}")
+                
+                if optimal_action is None and available_count > 0:
+                    print(f"  [WARNING] 利用可能な救急車があるのにoptimal_actionがNone!")
+                    
+                    # 環境の状態を詳細確認
+                    if hasattr(self.env, 'pending_call') and self.env.pending_call:
+                        print(f"  pending_call exists: True")
+                        print(f"  pending_call.h3_index: {self.env.pending_call.get('h3_index')}")
+                        
+                        # H3の検証
+                        call_h3 = self.env.pending_call.get('h3_index')
+                        if hasattr(self.env, 'grid_mapping'):
+                            in_mapping = call_h3 in self.env.grid_mapping
+                            print(f"  H3 in grid_mapping: {in_mapping}")
+                    else:
+                        print(f"  [ERROR] pending_call is None or doesn't exist!")
+            
             # 教師あり学習の判定
             use_teacher = optimal_action is not None and np.random.random() < teacher_prob
+            
+            # ★★★ デバッグ: 教師使用判定の結果 ★★★
+            if episode_length < 3:
+                print(f"  use_teacher: {use_teacher}")
+                if not use_teacher:
+                    if optimal_action is None:
+                        print(f"  [REASON] optimal_action is None")
+                    else:
+                        print(f"  [REASON] 確率判定で不採用 (乱数 >= {teacher_prob})")
             
             if training:
                 if use_teacher:
