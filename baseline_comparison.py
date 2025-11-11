@@ -37,7 +37,7 @@ from constants import SEVERITY_GROUPS
 # ============================================================
 EXPERIMENT_CONFIG = {
     # 比較する戦略のリスト（ここで戦略を追加・削除）
-    'strategies': ['closest', 
+    'strategies': [#'closest', 
                    #'severity_based',
                    #'advanced_severity',
                    'ppo_agent',
@@ -84,11 +84,11 @@ EXPERIMENT_CONFIG = {
             'time_limit_seconds': 780
         },
         'ppo_agent': {
-            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251104_191209/checkpoints/best_model.pth',
+            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251110_182404/checkpoints/best_model.pth',
             # 'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251021_193942/final_model.pth',
             # config_path: 設定ファイルのパス（オプション、存在しない場合はチェックポイントから読み込む）
-            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251104_191209/configs/config.json',
-            'hybrid_mode': True,
+            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251110_182404/configs/config.json',
+            'hybrid_mode': False,
             'severe_conditions': ['重症', '重篤', '死亡'],
             'mild_conditions': ['軽症', '中等症']
         },
@@ -489,7 +489,23 @@ def aggregate_results_efficiently(results: Dict[str, List],
         threshold_13min_rates = []
         threshold_6min_severe_rates = []
         
+        # ★配車統計の収集★
+        dispatch_successes = []
+        dispatch_failures = []
+        dispatch_failure_rates = []
+        total_calls_list = []
+        completed_calls_list = []
+        
         for idx, report in enumerate(reports):
+            # ★配車統計の収集★
+            if 'summary' in report:
+                summary = report['summary']
+                total_calls_list.append(summary.get('total_calls', 0))
+                completed_calls_list.append(summary.get('completed_calls', 0))
+                dispatch_successes.append(summary.get('dispatch_success', 0))
+                dispatch_failures.append(summary.get('dispatch_failures', 0))
+                dispatch_failure_rates.append(summary.get('dispatch_failure_rate', 0.0))
+            
             # 基本統計
             if 'response_times' in report and 'overall' in report['response_times']:
                 all_response_times.append(report['response_times']['overall']['mean'])
@@ -529,6 +545,15 @@ def aggregate_results_efficiently(results: Dict[str, List],
         
         # 統計計算（信頼区間も含む）
         aggregated[strategy] = {
+            'dispatch_stats': {
+                'total_calls_mean': np.mean(total_calls_list) if total_calls_list else 0,
+                'completed_calls_mean': np.mean(completed_calls_list) if completed_calls_list else 0,
+                'dispatch_success_mean': np.mean(dispatch_successes) if dispatch_successes else 0,
+                'dispatch_failures_mean': np.mean(dispatch_failures) if dispatch_failures else 0,
+                'dispatch_failure_rate_mean': np.mean(dispatch_failure_rates) if dispatch_failure_rates else 0,
+                'dispatch_failure_rate_std': np.std(dispatch_failure_rates) if dispatch_failure_rates else 0,
+                'completion_rate_mean': (np.mean(completed_calls_list) / np.mean(total_calls_list) * 100) if total_calls_list and np.mean(total_calls_list) > 0 else 0
+            },
             'response_time_overall': {
                 'mean': np.mean(all_response_times),
                 'std': np.std(all_response_times),
@@ -574,6 +599,13 @@ def aggregate_results_efficiently(results: Dict[str, List],
         print(f"  平均応答時間: {aggregated[strategy]['response_time_overall']['mean']:.2f} ± "
               f"{aggregated[strategy]['response_time_overall']['std']:.2f} 分")
         print(f"  サンプル数: {len(all_response_times)}")
+        
+        # ★配車統計を表示★
+        if 'dispatch_stats' in aggregated[strategy]:
+            dispatch_stats = aggregated[strategy]['dispatch_stats']
+            print(f"  配車失敗率: {dispatch_stats['dispatch_failure_rate_mean']:.2f}% "
+                  f"(失敗: {dispatch_stats['dispatch_failures_mean']:.0f}件, "
+                  f"完了率: {dispatch_stats['completion_rate_mean']:.1f}%)")
     
     # 集約結果をJSON保存
     summary_path = os.path.join(output_dir, 'aggregated_results.json')
@@ -710,11 +742,16 @@ def visualize_comparison(analysis: Dict, output_dir: str):
     # 戦略数に応じてレイアウトを調整
     num_strategies = len(strategies)
     
-    if num_strategies <= 3:
-        # 3つ以下の場合：2行3列のレイアウト（基本6個のグラフ）
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    if num_strategies <= 2:
+        # 2つ以下の場合：2行4列のレイアウト（配車失敗率追加）
+        fig, axes = plt.subplots(2, 4, figsize=(20, 10))
         axes = axes.flatten()
-        max_plots = 6  # 最大6個のサブプロット
+        max_plots = 8
+    elif num_strategies <= 3:
+        # 3つの場合：2行4列のレイアウト（配車失敗率追加）
+        fig, axes = plt.subplots(2, 4, figsize=(24, 12))
+        axes = axes.flatten()
+        max_plots = 8
     else:
         # 4つ以上の場合：3行3列のレイアウト
         fig, axes = plt.subplots(3, 3, figsize=(18, 18))
@@ -807,16 +844,35 @@ def visualize_comparison(analysis: Dict, output_dir: str):
     ax.set_ylim(0, 100)
     ax.grid(True, alpha=0.3)
     
-    # 7. 統計的有意性のヒートマップ（4つ以上の戦略がある場合）
-    if num_strategies >= 4 and 6 < max_plots:
+    # ★6.5. 配車失敗率★
+    if 6 < max_plots:
         ax = axes[6]
+        dispatch_failure_means = [analysis[s].get('dispatch_stats', {}).get('dispatch_failure_rate_mean', 0) for s in strategies]
+        dispatch_failure_stds = [analysis[s].get('dispatch_stats', {}).get('dispatch_failure_rate_std', 0) for s in strategies]
+        bars = ax.bar(x_pos, dispatch_failure_means, yerr=dispatch_failure_stds, capsize=5,
+                       color=[strategy_colors[s] for s in strategies], alpha=0.7)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels([strategy_labels[s] for s in strategies], rotation=45, ha='right')
+        ax.set_ylabel('配車失敗率（%）')
+        ax.set_title('配車失敗率（全隊出場中）')
+        ax.set_ylim(0, max(10, max(dispatch_failure_means) * 1.2) if dispatch_failure_means else 10)
+        ax.grid(True, alpha=0.3)
+        
+        # 数値表示
+        for i, (mean, std) in enumerate(zip(dispatch_failure_means, dispatch_failure_stds)):
+            if mean > 0:
+                ax.text(i, mean + std + 0.2, f'{mean:.2f}%', 
+                        ha='center', va='bottom', fontsize=9)
+    
+    # 7. 統計的有意性のヒートマップ（4つ以上の戦略がある場合）
+    if num_strategies >= 4 and 7 < max_plots:
+        ax = axes[7]
         create_significance_heatmap(analysis, strategies, strategy_labels, ax)
     
     # 8. 改善率の比較（ベースライン戦略との比較）
     if num_strategies >= 2:
-        # 3つの戦略の場合：6番目のサブプロットに改善率比較を表示
-        # 4つ以上の戦略の場合：7番目のサブプロットに改善率比較を表示
-        plot_index = 6 if num_strategies == 3 else (7 if 7 < max_plots else 6)
+        # 配車失敗率グラフの後（7番目）に改善率比較を表示
+        plot_index = 7 if num_strategies <= 3 else (8 if 8 < max_plots else 7)
         if plot_index < max_plots:
             ax = axes[plot_index]
             create_improvement_comparison(analysis, strategies, strategy_labels, strategy_colors, ax)
@@ -1021,6 +1077,18 @@ def create_detailed_summary_report(aggregated: Dict,
             f.write("-" * 80 + "\n")
             
             data = aggregated[strategy]
+            
+            # ★配車統計を表示★
+            if 'dispatch_stats' in data:
+                dispatch_stats = data['dispatch_stats']
+                f.write(f"0. 配車統計\n")
+                f.write(f"   総事案数: {dispatch_stats['total_calls_mean']:.0f} 件\n")
+                f.write(f"   完了事案数: {dispatch_stats['completed_calls_mean']:.0f} 件\n")
+                f.write(f"   完了率: {dispatch_stats['completion_rate_mean']:.1f} %\n")
+                f.write(f"   配車成功: {dispatch_stats['dispatch_success_mean']:.0f} 件\n")
+                f.write(f"   配車失敗: {dispatch_stats['dispatch_failures_mean']:.0f} 件\n")
+                f.write(f"   配車失敗率: {dispatch_stats['dispatch_failure_rate_mean']:.2f} ± {dispatch_stats['dispatch_failure_rate_std']:.2f} %\n")
+                f.write(f"   ※配車失敗：全隊出場中で配車できなかった事案\n\n")
             
             f.write(f"1. 平均応答時間\n")
             f.write(f"   全体:\n")

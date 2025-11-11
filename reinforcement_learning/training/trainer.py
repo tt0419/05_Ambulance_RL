@@ -254,43 +254,41 @@ class PPOTrainer:
                     else:
                         print(f"  [ERROR] pending_call is None or doesn't exist!")
             
-            # 教師あり学習の判定
-            use_teacher = optimal_action is not None and np.random.random() < teacher_prob
-            
+            if training:
+                action, log_prob, value = self.agent.select_action_with_teacher(
+                    state,
+                    action_mask,
+                    optimal_action,
+                    teacher_prob,
+                    deterministic=False
+                )
+                matched_teacher = (action == optimal_action) if optimal_action is not None else False
+            else:
+                action, log_prob, value = self.agent.select_action_with_teacher(
+                    state,
+                    action_mask,
+                    optimal_action,
+                    1.0 if force_teacher else 0.0,
+                    deterministic=True
+                )
+                matched_teacher = (action == optimal_action) if optimal_action is not None else False
+
+            teacher_used = matched_teacher and (
+                (training and teacher_prob > 0.0) or (not training and force_teacher)
+            )
+
             # ★★★ デバッグ: 教師使用判定の結果 ★★★
             if episode_length < 3:
-                print(f"  use_teacher: {use_teacher}")
-                if not use_teacher:
+                print(f"  teacher_used: {teacher_used}")
+                if not teacher_used:
                     if optimal_action is None:
                         print(f"  [REASON] optimal_action is None")
+                    elif training and teacher_prob == 0.0:
+                        print(f"  [REASON] teacher_probが0のため教師を使用せず")
+                    elif not training and force_teacher and optimal_action is None:
+                        print(f"  [REASON] force_teacher=Trueだがoptimal_actionが取得できず")
                     else:
-                        print(f"  [REASON] 確率判定で不採用 (乱数 >= {teacher_prob})")
-            
-            if training:
-                if use_teacher:
-                    # 教師の行動を使用
-                    action = optimal_action
-                    # PPOエージェントで確率を計算
-                    state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.agent.device)
-                    with torch.no_grad():
-                        action_probs = self.agent.actor(state_tensor)
-                        value = self.agent.critic(state_tensor).item()
-                        log_prob = torch.log(action_probs[0, action]).item()
-                    
-                    # 教師との一致を記録
-                    matched_teacher = True
-                else:
-                    # PPOエージェントの選択
-                    action, log_prob, value = self.agent.select_action(
-                        state, action_mask, deterministic=False
-                    )
-                    matched_teacher = (action == optimal_action) if optimal_action is not None else False
-            else:
-                # 評価時
-                action, log_prob, value = self.agent.select_action(
-                    state, action_mask, deterministic=True
-                )
-                matched_teacher = False
+                        print(f"  [REASON] select_action_with_teacherがPPO行動を選択")
             
             # 環境ステップ（教師一致情報を渡す）
             self.env.current_matched_teacher = matched_teacher  # 一時的に保存

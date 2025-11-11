@@ -17,8 +17,8 @@ data_paths:
   travel_time_matrix: "data/tokyo/calibration2/linear_calibrated_response.npy"
 
 experiment:
-  name: "hybrid_ppo_tokyo23_busydays()_v1"
-  description: "繁忙期のデータを使用して学習を実施してみる"
+  name: "hybrid_ppo_0930175329_v2"
+  description: "0930175329ベースに新環境で実験。応答時間重視、カバレッジは補助"
   seed: 42
   device: cuda
 
@@ -68,20 +68,20 @@ data:
   
   # 学習期間（軽症系が多い期間と繁忙期の両方を含む）
   train_periods:
-    - start_date: "20230701"
-      end_date: "20230831"    # 10日間に延長
-    - start_date: "20231201"  # 繁忙期データ追加
-      end_date: "20240131"
+    - start_date: "20230615"
+      end_date: "20230615"    # 10日間に延長
+    # - start_date: "20231201"  # 繁忙期データ追加
+    #   end_date: "20240131"
   
   eval_periods:
-    - start_date: "20240701"
-      end_date: "20230831"
+    - start_date: "20230615"
+      end_date: "20230615"
 
 # -------------------------------------------------------------------
 # PPOハイパーパラメータ (軽症系学習に最適化)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 1000  # 重症系をスキップするため、エピソード数を削減可能
+  n_episodes: 5000  # 重症系をスキップするため、エピソード数を削減可能
   batch_size: 1024
   
   # 学習率（config_tokyo23.yamlの設定を基本的に継承）
@@ -120,13 +120,13 @@ reward:
       # 基本時間ペナルティ（軽症系のみ適用）
       time_penalty_per_minute: -1.0  # config_tokyo23より軽め
       
-      # 軽症系達成ボーナス
+      # 軽症系達成ボーナスn
       mild_under_13min_bonus: 5.0
       moderate_under_13min_bonus: 10.0
       
       # 閾値超過ペナルティ
-      over_13min_penalty: -5.0
-      over_20min_penalty: -50.0  # 20分超過は重いペナルティ
+      over_13min_penalty: -20.0
+      over_20min_penalty: -100.0  # 20分超過は重いペナルティ
       
       # カバレッジボーナス（重症系への準備度）
       good_coverage_bonus: 10.0  # カバレッジ0.8以上

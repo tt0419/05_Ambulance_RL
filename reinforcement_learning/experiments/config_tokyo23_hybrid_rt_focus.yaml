@@ -1,0 +1,147 @@
+# config_tokyo23_hybrid_rt_focus.yaml
+# 東京23区ハイブリッドモード（レスポンスタイム最優先・軽症系単純報酬）設定
+#
+# 目的:
+#   - ハイブリッドモードは維持しつつ、軽症系の報酬を「短時間ほど高評価」となる単純設計にする
+#   - カバレッジや稼働バランスは評価対象から外し、応答時間のみを報酬対象とする
+#
+
+# ベース設定ファイルを継承
+inherits: ./config.yaml
+
+# ===================================================================
+# 実験設定
+# ===================================================================
+experiment:
+  name: "hybrid_ppo_rt_focus"
+  description: "軽症系もレスポンスタイム最優先の単純報酬で学習"
+  seed: 42
+  device: cuda
+
+# ===================================================================
+# 報酬モード設定
+# ===================================================================
+reward_mode:
+  mode: hybrid  # ハイブリッドモード（重症系は直近隊、軽症系を学習）
+
+# ===================================================================
+# ハイブリッドモード設定（ems_environment用）
+# ===================================================================
+hybrid_mode:
+  enabled: true
+
+  severity_classification:
+    severe_conditions: ["重症", "重篤", "死亡"]
+    mild_conditions: ["軽症", "中等症"]
+
+  # 報酬重み（応答時間のみ反映）
+  reward_weights:
+    response_time: 1.0
+    coverage: 0.0
+    workload_balance: 0.0
+
+# ===================================================================
+# データ設定（必要最低限のみ記述。詳細はconfig_tokyo23_hybrid.yamlと同じ）
+# ===================================================================
+data:
+  area_restriction:
+    enabled: true
+    area_name: "東京23区"
+    districts: [
+      "千代田区", "中央区", "港区", "新宿区", "文京区", "台東区",
+      "墨田区", "江東区", "品川区", "目黒区", "大田区", "世田谷区",
+      "渋谷区", "中野区", "杉並区", "豊島区", "北区", "荒川区",
+      "板橋区", "練馬区", "足立区", "葛飾区", "江戸川区"
+    ]
+    num_ambulances_in_area: 192
+    state_dim: 999
+    action_dim: 192
+
+  max_steps_per_episode: 3000
+  episode_duration_hours: 24
+
+  train_periods:
+    - start_date: "20230615"
+      end_date: "20230615"
+
+  eval_periods:
+    - start_date: "20230615"
+      end_date: "20230615"
+
+# ===================================================================
+# PPOハイパーパラメータ
+# ===================================================================
+ppo:
+  n_episodes: 5000
+  batch_size: 1024
+  learning_rate:
+    actor: 0.0003
+    critic: 0.001
+    scheduler: constant
+  n_epochs: 6
+  clip_epsilon: 0.1
+  gamma: 0.99
+  gae_lambda: 0.95
+  entropy_coef: 0.015
+  max_grad_norm: 0.5
+
+# ===================================================================
+# 報酬設計（軽症系: 応答時間のみ評価）
+# ===================================================================
+reward:
+  system:
+    dispatch_failure: -1.0
+    no_available_ambulance: 0.0
+    unhandled_call_penalty: -1.0
+
+  core:
+    mode: "hybrid"
+    coverage_impact_weight: 0.0  # カバレッジによる調整を無効化
+
+    hybrid_params:
+      # 応答時間の線形ペナルティ（分単位）
+      time_penalty_per_minute: -2.0
+
+      # 13分以内なら少しボーナス／閾値超過で大きく減点
+      mild_under_13min_bonus: 5.0
+      moderate_under_13min_bonus: 5.0
+      over_13min_penalty: -15.0
+      over_20min_penalty: -40.0
+
+      # カバレッジ・稼働バランスは評価しない
+      good_coverage_bonus: 0.0
+      coverage_maintenance_bonus: 0.0
+      poor_coverage_penalty: 0.0
+      balanced_workload_bonus: 0.0
+      overloaded_penalty: 0.0
+
+  episode:
+    base_penalty_per_minute: -0.5
+    achievement_bonuses:
+      rate_6min: 20.0
+      rate_13min: 10.0
+      mild_13min_rate: 30.0
+      mild_under_20min_rate: 10.0
+    failure_penalty_per_incident: -1.0
+
+# ===================================================================
+# 教師あり学習（任意。ここではオフ）
+# ===================================================================
+teacher:
+  enabled: false
+
+# ===================================================================
+# 評価設定
+# ===================================================================
+evaluation:
+  interval: 100
+  n_eval_episodes: 5
+  compare_baselines: ["closest", "severity_based"]
+  metrics:
+    - "mild_mean_rt"
+    - "mild_13min_rate"
+    - "overall_mean_rt"
+    - "overall_13min_rate"
+    - "dispatch_ratio"
+
+

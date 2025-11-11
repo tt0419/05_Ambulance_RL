@@ -128,10 +128,10 @@ class RewardDesigner:
             params = reward_mode_config.get('continuous', {})
             self.continuous_params = {
                 'critical': params.get('critical', {
-                    'target': 6, 'max_bonus': 50.0, 'penalty_scale': 5.0, 'weight': 5.0
+                    'target': 6, 'max_bonus': 50.0, 'penalty_scale': 5.0, 'weight': 1.0
                 }),
                 'moderate': params.get('moderate', {
-                    'target': 13, 'max_bonus': 20.0, 'penalty_scale': 2.0, 'weight': 2.0
+                    'target': 13, 'max_bonus': 20.0, 'penalty_scale': 2.0, 'weight': 1.0
                 }),
                 'mild': params.get('mild', {
                     'target': 13, 'max_bonus': 10.0, 'penalty_scale': 0.5, 'weight': 1.0

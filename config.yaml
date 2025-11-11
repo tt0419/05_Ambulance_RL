@@ -51,11 +51,11 @@ severity:
     critical:
       conditions: ["重症", "重篤", "死亡"]
       time_limit_seconds: 360  # 6分
-      reward_weight: 5.0
+      reward_weight: 1.0
     moderate:
       conditions: ["中等症"]
       time_limit_seconds: 780  # 13分
-      reward_weight: 2.0
+      reward_weight: 1.0
     mild:
       conditions: ["軽症"]
       time_limit_seconds: 780  # 13分
@@ -116,12 +116,12 @@ reward:
         target: 6
         max_bonus: 50.0
         penalty_scale: 5.0
-        weight: 5.0
+        weight: 1.0
       moderate:
         target: 13
         max_bonus: 20.0
         penalty_scale: 2.0
-        weight: 2.0
+        weight: 1.0
       mild:
         target: 13
         max_bonus: 10.0

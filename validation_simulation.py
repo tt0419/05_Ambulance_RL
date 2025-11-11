@@ -456,6 +456,8 @@ class ValidationSimulator:
         self.statistics = {
             'total_calls': 0,
             'completed_calls': 0,
+            'dispatch_success': 0,  # ★追加: 配車成功数★
+            'dispatch_failures': 0,  # ★追加: 配車失敗数★
             'response_times': [],
             'response_times_by_severity': {},
             'utilization_by_hour': {h: [] for h in range(24)},
@@ -1480,6 +1482,9 @@ class ValidationSimulator:
         ambulance = self.find_closest_available_ambulance(call.h3_index, call.severity)
         
         if ambulance:
+            # ★配車成功を記録★
+            self.statistics['dispatch_success'] += 1
+            
             ambulance.status = AmbulanceStatus.DISPATCHED
             ambulance.assigned_call = call.id
             call.assigned_ambulance = ambulance.id
@@ -1505,6 +1510,9 @@ class ValidationSimulator:
             if self.verbose_logging:
                 print(f"[SCHEDULE] Call {call.id}: ARRIVE_SCENE event for Amb {ambulance.id} scheduled at {arrive_event.time:.2f} (travel: {travel_time_to_scene:.2f}s)")
         else:
+            # ★配車失敗を記録★
+            self.statistics['dispatch_failures'] += 1
+            
             if self.verbose_logging:
                 print(f"[WARN] Call {call.id}: No ambulance available for dispatch at {event.time:.2f}. Call queued implicitly.")
     
@@ -1965,9 +1973,18 @@ class ValidationSimulator:
         completed_calls_count = int(self.statistics['completed_calls'])
         total_distance_km = float(self.statistics['total_distance']) if self.statistics['total_distance'] else 0.0
 
+        # 配車統計の計算
+        dispatch_success = int(self.statistics['dispatch_success'])
+        dispatch_failures = int(self.statistics['dispatch_failures'])
+        dispatch_total = dispatch_success + dispatch_failures
+        dispatch_failure_rate = (dispatch_failures / dispatch_total * 100) if dispatch_total > 0 else 0.0
+        
         report['summary'] = {
             'total_calls': int(self.statistics['total_calls']),
             'completed_calls': completed_calls_count,
+            'dispatch_success': dispatch_success,  # ★追加★
+            'dispatch_failures': dispatch_failures,  # ★追加★
+            'dispatch_failure_rate': float(dispatch_failure_rate),  # ★追加★
             'simulation_duration_hours': float(self.configured_end_time / 3600),
             'total_distance_km': total_distance_km,
             'average_distance_per_call_km': float(total_distance_km / completed_calls_count) if completed_calls_count > 0 else 0.0,
