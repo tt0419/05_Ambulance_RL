@@ -129,10 +129,28 @@ class PPOTrainer:
             self.episode_rewards.append(episode_reward)
             self.episode_lengths.append(episode_length)
             
-            # PPO更新
-            if len(self.agent.buffer) >= self.agent.batch_size:
+            buffer_size = len(self.agent.buffer)
+            batch_size = self.agent.batch_size
+            
+            if buffer_size >= batch_size:
+                print(f"[UPDATE] Episode {episode}: バッファサイズ={buffer_size}, update()を実行")
                 update_stats = self.agent.update()
                 self.training_stats.append(update_stats)
+                
+                if self.use_wandb:
+                    wandb.log({
+                        'train/update_count': len(self.training_stats),
+                        'train/buffer_size_at_update': buffer_size,
+                        'train/actor_loss': update_stats.get('actor_loss', 0),
+                        'train/critic_loss': update_stats.get('critic_loss', 0),
+                        'train/episode': episode
+                    })
+                
+                print(f"  actor_loss: {update_stats.get('actor_loss', 0):.4f}")
+                print(f"  critic_loss: {update_stats.get('critic_loss', 0):.4f}")
+                print(f"  総update回数: {len(self.training_stats)}")
+            else:
+                print(f"[SKIP] Episode {episode}: バッファサイズ={buffer_size} < {batch_size}, update()スキップ")
             
             # ログ出力（毎回表示）
             self._log_training_progress(episode, episode_reward, episode_length, episode_stats)
@@ -169,6 +187,13 @@ class PPOTrainer:
         # 最終モデルの保存
         self.agent.save(self.output_dir / "final_model.pth")
         self._save_training_stats()
+        
+        print(f"\n総update回数: {len(self.training_stats)}")
+        if self.training_stats:
+            avg_actor_loss = np.mean([s['actor_loss'] for s in self.training_stats])
+            avg_critic_loss = np.mean([s['critic_loss'] for s in self.training_stats])
+            print(f"平均actor_loss: {avg_actor_loss:.4f}")
+            print(f"平均critic_loss: {avg_critic_loss:.4f}")
         
     def _run_episode(self, training: bool = True, force_teacher: bool = False) -> Tuple[float, int, Dict]:
         """エピソードを実行（ハイブリッドモード対応版）"""
