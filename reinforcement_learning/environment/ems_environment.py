@@ -16,6 +16,8 @@ from pathlib import Path
 from data_cache import get_emergency_data_cache
 import sys
 import os
+import pickle
+import random
 
 # プロジェクトルートをパスに追加
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -23,6 +25,15 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 # 統一された傷病度定数をインポート
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from constants import SEVERITY_GROUPS, is_severe_condition
+
+# ServiceTimeGeneratorEnhancedのインポート
+sys.path.append('data/tokyo/service_time_analysis')
+try:
+    from service_time_generator_enhanced import ServiceTimeGeneratorEnhanced
+    USE_ENHANCED_GENERATOR = True
+except ImportError:
+    print("警告: ServiceTimeGeneratorEnhancedが見つかりません。従来版を使用します。")
+    USE_ENHANCED_GENERATOR = False
 
 from validation_simulation import (
     ValidationSimulator,
@@ -32,54 +43,6 @@ from validation_simulation import (
     Event,
     ServiceTimeGenerator
 )
-
-class HierarchicalServiceTimeGenerator:
-    """階層的パラメータファイル対応のServiceTimeGenerator"""
-    
-    def __init__(self, params_file: str):
-        import json
-        with open(params_file, 'r', encoding='utf-8') as f:
-            self.params = json.load(f)
-    
-    def generate_time(self, severity: str, phase: str) -> float:
-        """指定されたフェーズの時間を生成（分単位）"""
-        
-        # severityがパラメータに存在しない場合、'軽症'にフォールバック
-        severity_params = self.params.get(severity, self.params.get('軽症', {}))
-        
-        # フェーズが存在しない場合のフォールバック
-        if phase not in severity_params:
-            default_times = {
-                'on_scene_time': 15.0,
-                'hospital_time': 20.0,
-                'return_time': 10.0
-            }
-            return np.random.lognormal(np.log(default_times.get(phase, 10.0)), 0.5)
-        
-        phase_params = severity_params[phase]
-        
-        # 階層構造の場合は'default'キーを使用
-        if isinstance(phase_params, dict) and 'default' in phase_params:
-            default_params = phase_params['default']
-            if default_params['distribution'] == 'lognormal':
-                return np.random.lognormal(default_params['mu'], default_params['sigma'])
-            else:
-                return default_params.get('mean_minutes', 15.0)
-        # 従来の単純構造の場合
-        elif isinstance(phase_params, dict) and 'distribution' in phase_params:
-            if phase_params['distribution'] == 'lognormal':
-                return np.random.lognormal(phase_params['mu'], phase_params['sigma'])
-            else:
-                return phase_params.get('mean_minutes', 15.0)
-        else:
-            # 構造が不明な場合
-            print(f"⚠️ 不明なパラメータ構造: {severity}.{phase} = {type(phase_params)}")
-            default_times = {
-                'on_scene_time': 15.0,
-                'hospital_time': 20.0,
-                'return_time': 10.0
-            }
-            return np.random.lognormal(np.log(default_times.get(phase, 10.0)), 0.5)
 
 # 設定ユーティリティのインポート
 try:
@@ -235,6 +198,12 @@ class EMSEnvironment:
         # ServiceTimeGeneratorの初期化
         self._init_service_time_generator()
         
+        # 病院選択関連の初期化（ValidationSimulatorと同じ）
+        self._classify_hospitals()
+        self.use_probabilistic_selection = self.config.get('hospital_selection', {}).get('use_probabilistic', True)
+        if self.use_probabilistic_selection:
+            self._load_hospital_selection_model()
+        
         # ハイブリッドモード設定
         self.hybrid_mode = self.config.get('hybrid_mode', {}).get('enabled', False)
         if self.hybrid_mode:
@@ -282,39 +251,117 @@ class EMSEnvironment:
             print(f"  {category}: {conditions} (重み: {weight})")
     
     def _init_service_time_generator(self):
-        """ServiceTimeGeneratorの初期化"""
-        # サービス時間パラメータファイルの検索
-        possible_params_paths = [
-            self.base_dir / "service_time_analysis/lognormal_parameters_hierarchical.json",
-            self.base_dir / "service_time_analysis/lognormal_parameters.json",
-            "data/tokyo/service_time_analysis/lognormal_parameters_hierarchical.json",
-            "data/tokyo/service_time_analysis/lognormal_parameters.json"
-        ]
+        """ServiceTimeGeneratorの初期化（ValidationSimulatorと同じロジック）"""
+        # サービス時間パラメータファイルの検索（階層的パラメータを優先）
+        hierarchical_params_path = self.base_dir / "service_time_analysis/lognormal_parameters_hierarchical.json"
+        standard_params_path = self.base_dir / "service_time_analysis/lognormal_parameters.json"
         
-        params_file = None
-        for path in possible_params_paths:
-            if Path(path).exists():
-                params_file = str(path)
-                print(f"  サービス時間パラメータ読み込み: {params_file}")
-                break
-        
-        if params_file:
+        # ValidationSimulatorと同じ初期化ロジック
+        if USE_ENHANCED_GENERATOR and hierarchical_params_path.exists():
+            print(f"  階層的パラメータを使用してServiceTimeGeneratorEnhancedを初期化")
+            print(f"  パラメータファイル: {hierarchical_params_path}")
             try:
-                # 階層的パラメータファイルの場合は専用クラスを使用
-                if 'hierarchical' in params_file:
-                    self.service_time_generator = HierarchicalServiceTimeGenerator(params_file)
-                    print("  ✓ HierarchicalServiceTimeGenerator初期化成功")
+                self.service_time_generator = ServiceTimeGeneratorEnhanced(str(hierarchical_params_path))
+                print("  ✓ ServiceTimeGeneratorEnhanced初期化成功")
+            except Exception as e:
+                print(f"  ❌ ServiceTimeGeneratorEnhanced初期化失敗: {e}")
+                print(f"  標準パラメータで再試行します")
+                if standard_params_path.exists():
+                    self.service_time_generator = ServiceTimeGenerator(str(standard_params_path))
+                    print("  ✓ ServiceTimeGenerator（標準版）初期化成功")
                 else:
-                    self.service_time_generator = ServiceTimeGenerator(params_file)
-                    print("  ✓ ServiceTimeGenerator初期化成功")
+                    self.service_time_generator = None
+        elif standard_params_path.exists():
+            print(f"  標準パラメータを使用してServiceTimeGeneratorを初期化")
+            print(f"  パラメータファイル: {standard_params_path}")
+            try:
+                self.service_time_generator = ServiceTimeGenerator(str(standard_params_path))
+                print("  ✓ ServiceTimeGenerator初期化成功")
             except Exception as e:
                 print(f"  ❌ ServiceTimeGenerator初期化失敗: {e}")
-                print(f"  フォールバック処理を使用します")
                 self.service_time_generator = None
         else:
             print("  ❌ サービス時間パラメータファイルが見つかりません")
             print("  フォールバック処理を使用します")
             self.service_time_generator = None
+    
+    def _classify_hospitals(self):
+        """病院を3次救急とそれ以外に分類（ValidationSimulatorと同じロジック）"""
+        self.tertiary_hospitals = set()  # 3次救急医療機関
+        self.secondary_primary_hospitals = set()  # 2次以下の医療機関
+        
+        if not hasattr(self, 'hospital_data') or self.hospital_data is None:
+            print("警告: 病院データが提供されていません。病院分類をスキップします。")
+            return
+        
+        print("病院を救急医療機関レベル別に分類中...")
+        
+        # H3インデックスを計算して病院データに追加
+        self.hospital_data = self.hospital_data.copy()
+        self.hospital_data['h3_index'] = self.hospital_data.apply(
+            lambda row: h3.latlng_to_cell(row['latitude'], row['longitude'], 9)
+            if pd.notna(row['latitude']) and pd.notna(row['longitude']) else None,
+            axis=1
+        )
+        
+        # genre_codeに基づいて分類
+        if 'genre_code' in self.hospital_data.columns:
+            tertiary_hospitals_df = self.hospital_data[
+                (self.hospital_data['genre_code'] == 1) & 
+                (self.hospital_data['h3_index'].notna())
+            ]
+            
+            secondary_primary_hospitals_df = self.hospital_data[
+                (self.hospital_data['genre_code'] == 2) & 
+                (self.hospital_data['h3_index'].notna())
+            ]
+            
+            # H3インデックスをセットに変換
+            self.tertiary_hospitals = set(tertiary_hospitals_df['h3_index'].tolist())
+            self.secondary_primary_hospitals = set(secondary_primary_hospitals_df['h3_index'].tolist())
+            
+            # grid_mappingに存在しない病院を除外
+            self.tertiary_hospitals = {h3_idx for h3_idx in self.tertiary_hospitals if h3_idx in self.grid_mapping}
+            self.secondary_primary_hospitals = {h3_idx for h3_idx in self.secondary_primary_hospitals if h3_idx in self.grid_mapping}
+            
+            print(f"分類結果:")
+            print(f"  3次救急医療機関: {len(self.tertiary_hospitals)}件")
+            print(f"  2次以下医療機関: {len(self.secondary_primary_hospitals)}件")
+            
+            # 分類されなかった病院を2次以下に追加
+            all_hospital_h3 = set(self.hospital_data[self.hospital_data['h3_index'].notna()]['h3_index'].tolist())
+            all_hospital_h3 = {h3_idx for h3_idx in all_hospital_h3 if h3_idx in self.grid_mapping}
+            unclassified = all_hospital_h3 - self.tertiary_hospitals - self.secondary_primary_hospitals
+            if unclassified:
+                print(f"  未分類病院（2次以下に追加）: {len(unclassified)}件")
+                self.secondary_primary_hospitals.update(unclassified)
+        else:
+            print("警告: hospital_dataに'genre_code'カラムが見つかりません。全ての病院を2次以下として扱います。")
+            all_hospital_h3 = set(self.hospital_data[self.hospital_data['h3_index'].notna()]['h3_index'].tolist())
+            self.secondary_primary_hospitals = {h3_idx for h3_idx in all_hospital_h3 if h3_idx in self.grid_mapping}
+    
+    def _load_hospital_selection_model(self):
+        """確率的病院選択モデルを読み込む（ValidationSimulatorと同じロジック）"""
+        model_path = self.base_dir / 'processed/hospital_selection_model_revised.pkl'
+        
+        try:
+            with open(model_path, 'rb') as f:
+                main_model = pickle.load(f)
+                self.hospital_selection_model = main_model['selection_probabilities']
+                self.static_fallback_model = main_model.get('static_fallback_model', {})
+                self.model_hospital_master = pd.DataFrame(main_model['hospital_master'])
+                self.model_h3_centers = main_model['h3_centers']
+            
+            print(f"改訂版の確率的病院選択モデルを読み込みました:")
+            print(f"  実績ベースの条件数: {len(self.hospital_selection_model)}")
+            if self.static_fallback_model:
+                print(f"  静的フォールバックモデルの傷病度: {list(self.static_fallback_model.keys())}")
+        except FileNotFoundError as e:
+            print(f"警告: 確率モデルファイルが見つかりません: {e}")
+            print("デフォルトの最寄り病院選択を使用します。")
+            self.use_probabilistic_selection = False
+            self.hospital_selection_model = None
+            self.static_fallback_model = None
     
     def _load_base_data(self):
         """基本データの読み込み（修正版：ValidationSimulatorと同じフィルタリング）"""
@@ -1134,10 +1181,22 @@ class EMSEnvironment:
         # 1. 現場到着時刻 = 現在時刻 + 応答時間
         arrive_scene_time = current_time + (response_time / 60.0)
         
-        # 2. 現場活動時間（ServiceTimeGeneratorを使用）
+        # 2. 現場活動時間（ServiceTimeGeneratorを使用、call_datetimeも渡す）
+        call_datetime = call.get('call_datetime')  # call_datetimeを取得
+        
         if self.service_time_generator:
             try:
-                on_scene_time = self.service_time_generator.generate_time(severity, 'on_scene_time')
+                # ServiceTimeGeneratorEnhancedの場合はcall_datetimeを渡す
+                import inspect
+                sig = inspect.signature(self.service_time_generator.generate_time)
+                if 'call_datetime' in sig.parameters:
+                    # 拡張版の場合
+                    on_scene_time = self.service_time_generator.generate_time(
+                        severity, 'on_scene_time', call_datetime=call_datetime
+                    )
+                else:
+                    # 従来版の場合
+                    on_scene_time = self.service_time_generator.generate_time(severity, 'on_scene_time')
             except Exception as e:
                 print(f"🚨 FALLBACK使用: 現場活動時間生成エラー({severity}, on_scene_time): {e}")
                 print(f"   正確なサービス時間ではなく推定値を使用しています！")
@@ -1167,10 +1226,20 @@ class EMSEnvironment:
         # 5. 病院到着時刻
         arrive_hospital_time = depart_scene_time + transport_time
         
-        # 6. 病院滞在時間（ServiceTimeGeneratorを使用）
+        # 6. 病院滞在時間（ServiceTimeGeneratorを使用、call_datetimeも渡す）
         if self.service_time_generator:
             try:
-                hospital_time = self.service_time_generator.generate_time(severity, 'hospital_time')
+                # ServiceTimeGeneratorEnhancedの場合はcall_datetimeを渡す
+                import inspect
+                sig = inspect.signature(self.service_time_generator.generate_time)
+                if 'call_datetime' in sig.parameters:
+                    # 拡張版の場合
+                    hospital_time = self.service_time_generator.generate_time(
+                        severity, 'hospital_time', call_datetime=call_datetime
+                    )
+                else:
+                    # 従来版の場合
+                    hospital_time = self.service_time_generator.generate_time(severity, 'hospital_time')
             except Exception as e:
                 print(f"🚨 FALLBACK使用: 病院滞在時間生成エラー({severity}, hospital_time): {e}")
                 print(f"   正確なサービス時間ではなく推定値を使用しています！")
@@ -1211,36 +1280,158 @@ class EMSEnvironment:
         return completion_time
     
     def _select_hospital(self, scene_h3: str, severity: str) -> str:
-        """病院選択（ValidationSimulatorの簡易版）"""
-        # 現在は最も近い病院を選択（実際のロジックはより複雑）
-        if not hasattr(self, '_hospital_h3_list'):
-            self._hospital_h3_list = []
-            for _, hospital in self.hospital_data.iterrows():
-                try:
-                    if pd.notna(hospital['latitude']) and pd.notna(hospital['longitude']):
-                        h3_idx = h3.latlng_to_cell(hospital['latitude'], hospital['longitude'], 9)
-                        if h3_idx in self.grid_mapping:
-                            self._hospital_h3_list.append(h3_idx)
-                except:
-                    continue
+        """傷病度に応じた病院選択（ValidationSimulatorと同じロジック）"""
+        severe_conditions = ['重症', '重篤']
         
-        if not self._hospital_h3_list:
-            return scene_h3  # フォールバック
+        # 重症・重篤の案件は決定論的選択
+        if severity in severe_conditions:
+            return self._select_hospital_deterministic(scene_h3, severity)
         
-        # 最短距離の病院を選択
-        min_distance = float('inf')
-        best_hospital_h3 = self._hospital_h3_list[0]
+        # 軽症・中等症・死亡：確率的選択
+        if not self.use_probabilistic_selection:
+            return self._select_hospital_deterministic(scene_h3, severity)
         
-        for hospital_h3 in self._hospital_h3_list:
+        # 現在の時間情報を取得（エピソード内の時刻から算出）
+        if hasattr(self, 'current_time_seconds'):
+            current_time_seconds = self.current_time_seconds
+        else:
+            # フォールバックとして現在のステップから推定
+            current_time_seconds = self.episode_step * 60.0
+        
+        current_hour = int((current_time_seconds / 3600) % 24)
+        time_slot = current_hour // 4
+        days_elapsed = int(current_time_seconds / 86400)
+        day_of_week = days_elapsed % 7
+        day_type = 'weekend' if day_of_week >= 5 else 'weekday'
+        key = (time_slot, day_type, severity, scene_h3)
+        
+        # 1. 実績ベースの事前計算モデルから検索
+        hospital_probs = self.hospital_selection_model.get(key) if hasattr(self, 'hospital_selection_model') else None
+        
+        if hospital_probs:
+            pass  # 実績モデル使用
+        else:
+            # 2. 静的フォールバックモデルから検索
+            if hasattr(self, 'static_fallback_model') and self.static_fallback_model:
+                hospital_probs = self.static_fallback_model.get(severity, {}).get(scene_h3)
+                if not hospital_probs:
+                    # 静的フォールバックにもない場合は決定論的選択
+                    return self._select_hospital_deterministic(scene_h3, severity)
+            else:
+                # フォールバックモデルもない場合
+                return self._select_hospital_deterministic(scene_h3, severity)
+        
+        # 確率的選択の実行
+        selected_hospital = self._probabilistic_selection(hospital_probs)
+        
+        if selected_hospital:
+            return selected_hospital
+        
+        # 選択に失敗した場合は決定論的選択
+        return self._select_hospital_deterministic(scene_h3, severity)
+    
+    def _select_hospital_deterministic(self, incident_h3: str, severity: str) -> str:
+        """決定論的な病院選択（ValidationSimulatorと同じロジック）"""
+        severe_conditions = ['重症', '重篤']
+        
+        if severity in severe_conditions:
+            # 重症・重篤: 最寄りではなく、より適切な3次救急を選択
+            if self.tertiary_hospitals:
+                # 距離15km以内の3次救急から選択（最寄りではなくランダム選択）
+                candidates = []
+                inc_lat, inc_lon = h3.cell_to_latlng(incident_h3)
+                
+                for hospital_h3 in self.tertiary_hospitals:
+                    try:
+                        hosp_lat, hosp_lon = h3.cell_to_latlng(hospital_h3)
+                        distance = self._calculate_distance(inc_lat, inc_lon, hosp_lat, hosp_lon)
+                        if distance <= 15.0:  # 15km以内
+                            candidates.append((hospital_h3, distance))
+                    except:
+                        continue
+                
+                if candidates:
+                    # 上位3候補からランダム選択（実績の多様性を反映）
+                    candidates.sort(key=lambda x: x[1])
+                    top_candidates = candidates[:3]
+                    selected = random.choice(top_candidates)[0]
+                    return selected
+        
+        # 軽症・中等症・死亡の場合、または3次救急が見つからない重症・重篤ケース：2次以下から探す
+        if self.secondary_primary_hospitals:
+            nearest_secondary = self._find_nearest_hospital(incident_h3, self.secondary_primary_hospitals)
+            if nearest_secondary:
+                return nearest_secondary
+        
+        # それでも見つからない場合：軽症・中等症・死亡なら3次から探す
+        if severity not in severe_conditions and self.tertiary_hospitals:
+            nearest_tertiary = self._find_nearest_hospital(incident_h3, self.tertiary_hospitals)
+            if nearest_tertiary:
+                return nearest_tertiary
+        
+        # 全ての候補を探しても見つからない場合：現場と同じH3を返す
+        return incident_h3
+    
+    def _find_nearest_hospital(self, incident_h3: str, hospital_candidates: set) -> Optional[str]:
+        """指定された病院候補群から最寄りの病院を検索"""
+        if not hospital_candidates:
+            return None
+        
+        min_time = float('inf')
+        nearest_hospital = None
+        
+        for hospital_h3 in hospital_candidates:
             try:
-                distance = self._calculate_travel_time(scene_h3, hospital_h3)
-                if distance < min_distance:
-                    min_distance = distance
-                    best_hospital_h3 = hospital_h3
+                travel_time = self._calculate_travel_time(incident_h3, hospital_h3)
+                if travel_time < min_time:
+                    min_time = travel_time
+                    nearest_hospital = hospital_h3
             except:
                 continue
         
-        return best_hospital_h3
+        return nearest_hospital
+    
+    def _probabilistic_selection(self, hospital_probs: Dict[str, float]) -> Optional[str]:
+        """確率分布に基づいて病院を選択"""
+        if not hospital_probs:
+            return None
+        
+        # NumPyの確率的選択を使用
+        hospitals = list(hospital_probs.keys())
+        probabilities = list(hospital_probs.values())
+        
+        # 確率値の型を修正（文字列が混入している場合の対処）
+        try:
+            probabilities = [float(p) for p in probabilities]
+        except (ValueError, TypeError) as e:
+            return None
+        
+        # 正規化（念のため）
+        prob_sum = sum(probabilities)
+        if prob_sum > 0:
+            probabilities = [p / prob_sum for p in probabilities]
+        else:
+            # 全て同じ確率
+            probabilities = [1.0 / len(hospitals)] * len(hospitals)
+        
+        # 確率的選択
+        selected_hospital = np.random.choice(hospitals, p=probabilities)
+        
+        return selected_hospital
+    
+    def _calculate_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """2点間の距離をhaversine公式で計算（km単位）"""
+        R = 6371  # 地球の半径（km）
+        
+        lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        
+        a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+        c = 2 * np.arcsin(np.sqrt(a))
+        distance = R * c
+        
+        return distance
     
     # _calculate_travel_timeメソッドの修正
     def _calculate_travel_time(self, from_h3: str, to_h3: str) -> float:
