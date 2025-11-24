@@ -15,6 +15,7 @@ import seaborn as sns
 from typing import Dict, List
 from scipy import stats
 import sys
+from pathlib import Path
 
 import wandb
 
@@ -25,6 +26,17 @@ matplotlib.use('Agg')
 # 日本語フォント設定
 plt.rcParams['font.family'] = 'Meiryo'
 plt.rcParams['font.size'] = 12
+
+# プロジェクトルートを取得（現在のファイルから1階層上）
+# ファイル構造: PROJECT_ROOT/.05_Ambulance_RL_fix_from_v11_3/baseline_comparison.py
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+# .05_Ambulance_RL_fix_from_v11_3 ディレクトリをパスに追加
+fix_dir = PROJECT_ROOT / ".05_Ambulance_RL_fix_from_v11_3"
+if str(fix_dir) not in sys.path:
+    sys.path.append(str(fix_dir))
 
 # ディスパッチ戦略のインポート
 from dispatch_strategies import STRATEGY_CONFIGS
@@ -37,7 +49,7 @@ from constants import SEVERITY_GROUPS
 # ============================================================
 EXPERIMENT_CONFIG = {
     # 比較する戦略のリスト（ここで戦略を追加・削除）
-    'strategies': ['closest', 
+    'strategies': [#'closest', 
                    #'severity_based',
                    #'advanced_severity',
                    'ppo_agent',
@@ -84,10 +96,10 @@ EXPERIMENT_CONFIG = {
             'time_limit_seconds': 780
         },
         'ppo_agent': {
-            'model_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251017_113908/final_model.pth',
+            'model_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251123_071714' / 'checkpoints' / 'best_model.pth'),
             # config_path: 設定ファイルのパス（オプション、存在しない場合はチェックポイントから読み込む）
-            'config_path': 'reinforcement_learning/experiments/ppo_training/ppo_20251017_113908/configs/config.json',
-            'hybrid_mode': True,
+            'config_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251123_071714' / 'configs' / 'config.yaml'),
+            'hybrid_mode': False,
             'severe_conditions': ['重症', '重篤', '死亡'],
             'mild_conditions': ['軽症', '中等症']
         },
@@ -142,7 +154,7 @@ def run_comparison_experiment(
     end_date: str,
     episode_duration_hours: int = 24,
     num_runs: int = 100,
-    output_base_dir: str = 'data/tokyo/experiments',
+    output_base_dir: str = None,
     wandb_project: str = "ambulance-dispatch-simulation",
     experiment_name: str = None
 ):
@@ -158,6 +170,10 @@ def run_comparison_experiment(
         wandb_project: wandbのプロジェクト名
         experiment_name: カスタム実験名（オプション）
     """
+    # output_base_dirがNoneの場合は絶対パスを設定
+    if output_base_dir is None:
+        output_base_dir = str(PROJECT_ROOT / "data" / "tokyo" / "experiments")
+    
     # 実験ディレクトリの作成
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
@@ -1147,8 +1163,8 @@ if __name__ == "__main__":
     # ============================================================
     EXPERIMENT_PARAMS = {
         # 期間指定（ランダムサンプリング）
-        'start_date': "20230615",
-        'end_date': "20230615",  # 1ヶ月間
+        'start_date': "20230122",
+        'end_date': "20230128",  # 1ヶ月間
         
         # エピソード設定
         'episode_duration_hours': 24,  # 24時間エピソード
@@ -1157,7 +1173,7 @@ if __name__ == "__main__":
         'num_runs': 100,  # 各戦略100回ずつ実行
         
         # 出力設定
-        'output_base_dir': 'data/tokyo/experiments',
+        'output_base_dir': None,  # 自動的に絶対パスが設定されます
         'wandb_project': 'ems-dispatch-optimization',
         
         # オプション：カスタム実験名

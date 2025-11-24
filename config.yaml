@@ -33,9 +33,11 @@ data:
     enabled: false
     area_name: "default"
     districts: []
-    num_ambulances_in_area: 100
-    state_dim: 527
-    action_dim: 100
+    num_ambulances_in_area: 192  # 全域の場合
+    # ★注意: state_dimとaction_dimは環境から自動計算されます
+    # 以下の値は参考値です（area_restriction.enabled=falseの場合は使用されません）
+    state_dim: 999   # 参考値: 全域の場合
+    action_dim: 192  # 参考値: 全域の場合
   
   # デフォルト期間（個別設定で上書き）
   train_periods:
@@ -48,24 +50,24 @@ data:
 # ================================================================
 # 傷病度定義（システム固定）
 # ================================================================
-severity:
-  categories:
-    critical:
-      conditions: ["重症", "重篤", "死亡"]
-      time_limit_seconds: 360  # 6分
-      reward_weight: 5.0
-    moderate:
-      conditions: ["中等症"]
-      time_limit_seconds: 780  # 13分
-      reward_weight: 2.0
-    mild:
-      conditions: ["軽症"]
-      time_limit_seconds: 780  # 13分
-      reward_weight: 1.0
+# severity:
+#   categories:
+#     critical:
+#       conditions: ["重症", "重篤", "死亡"]
+#       time_limit_seconds: 360  # 6分
+#       reward_weight: 5.0
+#     moderate:
+#       conditions: ["中等症"]
+#       time_limit_seconds: 780  # 13分
+#       reward_weight: 2.0
+#     mild:
+#       conditions: ["軽症"]
+#       time_limit_seconds: 780  # 13分
+#       reward_weight: 1.0
   
-  thresholds:
-    golden_time: 360    # 6分（重症系目標）
-    standard_time: 780  # 13分（全体目標）
+#   thresholds:
+#     golden_time: 360    # 6分（重症系目標）
+#     standard_time: 780  # 13分（全体目標）
 
 # ================================================================
 # PPOデフォルト設定（個別設定で上書き可能）
@@ -175,13 +177,6 @@ reward:
 # ネットワーク構造（通常変更しない）
 # ================================================================
 network:
-  # 状態エンコーダ
-  state_encoder:
-    ambulance_features: 8
-    incident_features: 6
-    spatial_features: 16
-    temporal_features: 8
-  
   # Actor/Criticネットワーク
   actor:
     hidden_layers: [256, 128]

@@ -20,6 +20,17 @@ import torch
 import sys
 import os
 
+# プロジェクトルートを取得（現在のファイルから1階層上）
+# ファイル構造: PROJECT_ROOT/.05_Ambulance_RL_fix_from_v11_3/dispatch_strategies.py
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+# .05_Ambulance_RL_fix_from_v11_3 ディレクトリをパスに追加
+fix_dir = PROJECT_ROOT / ".05_Ambulance_RL_fix_from_v11_3"
+if str(fix_dir) not in sys.path:
+    sys.path.append(str(fix_dir))
+
 # データキャッシュのインポート
 from data_cache import get_emergency_data_cache
 
@@ -826,16 +837,16 @@ class PPOStrategy(DispatchStrategy):
         
         from pathlib import Path
         model_file = Path(model_path)
+        
+        # 絶対パスでない場合はPROJECT_ROOTを基準とした絶対パスに変換
+        if not model_file.is_absolute():
+            model_file = PROJECT_ROOT / model_path
+        
         if not model_file.exists():
-            # 相対パスの可能性を考慮
-            alternative_paths = [
-                Path(f"reinforcement_learning/{model_path}"),
-                Path(f"../{model_path}")
-            ]
-            for alt_path in alternative_paths:
-                if alt_path.exists():
-                    model_file = alt_path
-                    break
+            # fix_dirを基準としても試す
+            alt_path = fix_dir / model_path
+            if alt_path.exists():
+                model_file = alt_path
             else:
                 raise FileNotFoundError(f"Model file not found: {model_path}")
         
@@ -849,8 +860,19 @@ class PPOStrategy(DispatchStrategy):
         config_path = config.get('config_path')
         if config_path:
             config_file = Path(config_path)
+            
+            # 絶対パスでない場合はPROJECT_ROOTを基準とした絶対パスに変換
+            if not config_file.is_absolute():
+                config_file = PROJECT_ROOT / config_path
+            
+            # fix_dirを基準としても試す
+            if not config_file.exists():
+                alt_config = fix_dir / config_path
+                if alt_config.exists():
+                    config_file = alt_config
+            
             if config_file.exists():
-                print(f"  設定ファイルから読み込み: {config_path}")
+                print(f"  設定ファイルから読み込み: {config_file}")
                 with open(config_file, 'r', encoding='utf-8') as f:
                     saved_config = yaml.safe_load(f)
             else:
@@ -883,8 +905,20 @@ class PPOStrategy(DispatchStrategy):
         
         # データパスの取得
         data_paths = saved_config.get('data_paths', {})
-        travel_time_path = Path(data_paths.get('travel_time_matrix', 'data/tokyo/calibration2/linear_calibrated_response.npy'))
-        grid_mapping_path = Path(data_paths.get('grid_mapping', 'data/tokyo/processed/grid_mapping_res9.json'))
+        default_travel_time = PROJECT_ROOT / 'data' / 'tokyo' / 'calibration2' / 'linear_calibrated_response.npy'
+        default_grid_mapping = PROJECT_ROOT / 'data' / 'tokyo' / 'processed' / 'grid_mapping_res9.json'
+        
+        # パスの解決（相対パスの場合はPROJECT_ROOTを基準に解決）
+        travel_time_str = data_paths.get('travel_time_matrix', str(default_travel_time))
+        grid_mapping_str = data_paths.get('grid_mapping', str(default_grid_mapping))
+        
+        travel_time_path = Path(travel_time_str)
+        if not travel_time_path.is_absolute():
+            travel_time_path = PROJECT_ROOT / travel_time_path
+        
+        grid_mapping_path = Path(grid_mapping_str)
+        if not grid_mapping_path.is_absolute():
+            grid_mapping_path = PROJECT_ROOT / grid_mapping_path
         
         # 移動時間行列の読み込み
         if travel_time_path.exists():
@@ -892,14 +926,16 @@ class PPOStrategy(DispatchStrategy):
             print(f"  移動時間行列読み込み完了: {self.travel_time_matrix.shape}")
         else:
             print(f"  警告: 移動時間行列が見つかりません: {travel_time_path}")
+            self.travel_time_matrix = None
         
         # グリッドマッピングの読み込み
         if grid_mapping_path.exists():
-            with open(grid_mapping_path, 'r') as f:
+            with open(grid_mapping_path, 'r', encoding='utf-8') as f:
                 self.grid_mapping = json.load(f)
             print(f"  グリッドマッピング読み込み完了: {len(self.grid_mapping)}グリッド")
         else:
             print(f"  警告: グリッドマッピングが見つかりません: {grid_mapping_path}")
+            self.grid_mapping = None
         
         # StateEncoderの初期化
         self.state_encoder = StateEncoder(
@@ -935,7 +971,7 @@ class PPOStrategy(DispatchStrategy):
     
     def _load_id_mapping(self):
         """Phase 1で生成されたID対応表を読み込む"""
-        mapping_file = Path("id_mapping_proposal.json")
+        mapping_file = fix_dir / "id_mapping_proposal.json"
         
         if not mapping_file.exists():
             print("  ⚠️ 警告: id_mapping_proposal.json が見つかりません")
@@ -976,8 +1012,8 @@ class PPOStrategy(DispatchStrategy):
         """デフォルト設定を作成"""
         return {
             'data_paths': {
-                'travel_time_matrix': 'data/tokyo/calibration2/linear_calibrated_response.npy',
-                'grid_mapping': 'data/tokyo/processed/grid_mapping_res9.json'
+                'travel_time_matrix': str(PROJECT_ROOT / 'data' / 'tokyo' / 'calibration2' / 'linear_calibrated_response.npy'),
+                'grid_mapping': str(PROJECT_ROOT / 'data' / 'tokyo' / 'processed' / 'grid_mapping_res9.json')
             },
             'state_prediction': {
                 'action_dim': 192,
@@ -1315,7 +1351,8 @@ class MEXCLPStrategy(DispatchStrategy):
         
         # グリッドマッピングの読み込み
         try:
-            with open('data/tokyo/processed/grid_mapping_res9.json', 'r', encoding='utf-8') as f:
+            grid_mapping_path = PROJECT_ROOT / 'data' / 'tokyo' / 'processed' / 'grid_mapping_res9.json'
+            with open(grid_mapping_path, 'r', encoding='utf-8') as f:
                 self.grid_mapping = json.load(f)
             print(f"  グリッドマッピング読み込み成功: {len(self.grid_mapping)}グリッド")
         except Exception as e:
@@ -1324,7 +1361,7 @@ class MEXCLPStrategy(DispatchStrategy):
         # 移動時間行列の読み込み
         try:
             import numpy as np
-            matrix_path = 'data/tokyo/calibration2/log_calibrated_response.npy'
+            matrix_path = PROJECT_ROOT / 'data' / 'tokyo' / 'calibration2' / 'log_calibrated_response.npy'
             self.travel_time_matrix = np.load(matrix_path)
             print(f"  移動時間行列読み込み成功: shape={self.travel_time_matrix.shape}")
         except Exception as e:

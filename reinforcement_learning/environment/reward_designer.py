@@ -128,10 +128,10 @@ class RewardDesigner:
             params = reward_mode_config.get('continuous', {})
             self.continuous_params = {
                 'critical': params.get('critical', {
-                    'target': 6, 'max_bonus': 50.0, 'penalty_scale': 5.0, 'weight': 5.0
+                    'target': 6, 'max_bonus': 50.0, 'penalty_scale': 5.0, 'weight': 1.0
                 }),
                 'moderate': params.get('moderate', {
-                    'target': 13, 'max_bonus': 20.0, 'penalty_scale': 2.0, 'weight': 2.0
+                    'target': 13, 'max_bonus': 20.0, 'penalty_scale': 2.0, 'weight': 1.0
                 }),
                 'mild': params.get('mild', {
                     'target': 13, 'max_bonus': 10.0, 'penalty_scale': 0.5, 'weight': 1.0
@@ -309,7 +309,7 @@ class RewardDesigner:
         
         # 傷病度ボーナス
         category = severity_to_category(severity)
-        severity_weight = {'critical': 5.0, 'moderate': 2.0, 'mild': 1.0}.get(category, 1.0)
+        severity_weight = {'critical': 1.0, 'moderate': 1.0, 'mild': 1.0}.get(category, 1.0)
         severity_bonus = 0.0
         
         if category == 'critical' and response_time_minutes <= 6:

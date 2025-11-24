@@ -13,28 +13,38 @@ from typing import Dict, Tuple, Optional, List, Any
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from data_cache import get_emergency_data_cache
 import sys
 import os
 import pickle
 import random
 
-# プロジェクトルートをパスに追加
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# プロジェクトルートを取得（現在のファイルから3階層上）
+# ファイル構造: PROJECT_ROOT/.05_Ambulance_RL_fix_from_v11_3/reinforcement_learning/environment/ems_environment.py
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
-# 統一された傷病度定数をインポート
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+# .05_Ambulance_RL_fix_from_v11_3 ディレクトリをパスに追加
+fix_dir = PROJECT_ROOT / ".05_Ambulance_RL_fix_from_v11_3"
+if str(fix_dir) not in sys.path:
+    sys.path.append(str(fix_dir))
+
+# 必要なモジュールをインポート
+from data_cache import get_emergency_data_cache
 from constants import SEVERITY_GROUPS, is_severe_condition
 
 # ServiceTimeGeneratorEnhancedのインポート
-sys.path.append('data/tokyo/service_time_analysis')
+service_time_analysis_path = PROJECT_ROOT / "data" / "tokyo" / "service_time_analysis"
+sys.path.append(str(service_time_analysis_path))
 try:
     from service_time_generator_enhanced import ServiceTimeGeneratorEnhanced
     USE_ENHANCED_GENERATOR = True
 except ImportError:
     print("警告: ServiceTimeGeneratorEnhancedが見つかりません。従来版を使用します。")
+    print(f"検索パス: {service_time_analysis_path}")
     USE_ENHANCED_GENERATOR = False
 
+# validation_simulation のインポート（fix_dirから）
 from validation_simulation import (
     ValidationSimulator,
     EventType,
@@ -102,8 +112,12 @@ class EMSEnvironment:
         # 傷病度設定の初期化
         self._setup_severity_mapping()
         
-        # データパスの設定
-        self.base_dir = Path("data/tokyo")
+        # データパスの設定（プロジェクトルートからの絶対パスを使用）
+        self.base_dir = PROJECT_ROOT / "data" / "tokyo"
+        print(f"プロジェクトルート: {PROJECT_ROOT}")
+        print(f"データベースディレクトリ: {self.base_dir}")
+        if not self.base_dir.exists():
+            print(f"警告: データディレクトリが存在しません: {self.base_dir}")
         self._load_base_data()
         
         # 移動時間行列の読み込み（ValidationSimulatorと同じ方法）
@@ -253,8 +267,10 @@ class EMSEnvironment:
     def _init_service_time_generator(self):
         """ServiceTimeGeneratorの初期化（ValidationSimulatorと同じロジック）"""
         # サービス時間パラメータファイルの検索（階層的パラメータを優先）
-        hierarchical_params_path = self.base_dir / "service_time_analysis/lognormal_parameters_hierarchical.json"
-        standard_params_path = self.base_dir / "service_time_analysis/lognormal_parameters.json"
+        # プロジェクトルートからの絶対パスを使用
+        data_dir = PROJECT_ROOT / "data" / "tokyo"
+        hierarchical_params_path = data_dir / "service_time_analysis" / "lognormal_parameters_hierarchical.json"
+        standard_params_path = data_dir / "service_time_analysis" / "lognormal_parameters.json"
         
         # ValidationSimulatorと同じ初期化ロジック
         if USE_ENHANCED_GENERATOR and hierarchical_params_path.exists():
@@ -342,7 +358,9 @@ class EMSEnvironment:
     
     def _load_hospital_selection_model(self):
         """確率的病院選択モデルを読み込む（ValidationSimulatorと同じロジック）"""
-        model_path = self.base_dir / 'processed/hospital_selection_model_revised.pkl'
+        # プロジェクトルートからの絶対パスを使用
+        data_dir = PROJECT_ROOT / "data" / "tokyo"
+        model_path = data_dir / 'processed' / 'hospital_selection_model_revised.pkl'
         
         try:
             with open(model_path, 'rb') as f:
@@ -450,6 +468,11 @@ class EMSEnvironment:
         # 病院データ（方面に関係なく全体を使用）
         hospital_path = self.base_dir / "import/hospital_master.csv"
         self.hospital_data = pd.read_csv(hospital_path, encoding='utf-8')
+        # ValidationSimulatorと同じカラム名変更
+        self.hospital_data = self.hospital_data.rename(columns={
+            'hospital_latitude': 'latitude', 
+            'hospital_longitude': 'longitude'
+        })
         print(f"  病院数: {len(self.hospital_data)}")
         
         # グリッドマッピング

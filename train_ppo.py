@@ -260,12 +260,13 @@ def main():
         print("\n環境を初期化中...")
         env = EMSEnvironment(config_path)
         
-        # 状態・行動次元の取得
-        state_dim = config['data']['area_restriction'].get('state_dim', env.state_dim)
-        action_dim = config['data']['area_restriction'].get('action_dim', env.action_dim)
+        # 状態・行動次元の取得（常に環境の実際の次元を使用）
+        # ★修正: configではなく環境から直接取得
+        state_dim = env.state_dim
+        action_dim = env.action_dim
         
-        print(f"状態空間次元: {state_dim}")
-        print(f"行動空間次元: {action_dim}")
+        print(f"状態空間次元: {state_dim} (環境から取得)")
+        print(f"行動空間次元: {action_dim} (環境から取得)")
         
         # エージェントの初期化
         print("\nPPOエージェントを初期化中...")

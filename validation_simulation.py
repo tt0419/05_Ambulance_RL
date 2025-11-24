@@ -22,16 +22,32 @@ import pickle
 import csv
 from collections import defaultdict
 import seaborn as sns
+import sys
+
+# プロジェクトルートを取得（現在のファイルから1階層上）
+# ファイル構造: PROJECT_ROOT/.05_Ambulance_RL_fix_from_v11_3/validation_simulation.py
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+# .05_Ambulance_RL_fix_from_v11_3 ディレクトリをパスに追加
+fix_dir = PROJECT_ROOT / ".05_Ambulance_RL_fix_from_v11_3"
+if str(fix_dir) not in sys.path:
+    sys.path.append(str(fix_dir))
+
 from data_cache import get_emergency_data_cache, get_datetime_range_emergency_data
 
 # ServiceTimeGeneratorEnhancedのインポート
-import sys
-sys.path.append('data/tokyo/service_time_analysis')
+service_time_analysis_path = PROJECT_ROOT / "data" / "tokyo" / "service_time_analysis"
+if str(service_time_analysis_path) not in sys.path:
+    sys.path.append(str(service_time_analysis_path))
+
 try:
     from service_time_generator_enhanced import ServiceTimeGeneratorEnhanced
     USE_ENHANCED_GENERATOR = True
 except ImportError:
     print("警告: ServiceTimeGeneratorEnhancedが見つかりません。従来版を使用します。")
+    print(f"検索パス: {service_time_analysis_path}")
     USE_ENHANCED_GENERATOR = False
 
 # ディスパッチ戦略のインポート
@@ -610,7 +626,8 @@ class ValidationSimulator:
     def _load_hospital_selection_model(self):
         """確率的病院選択モデルを読み込む"""
         # ★変更点1：読み込むモデルファイルを新しい「改訂版」に変更
-        model_path = 'data/tokyo/processed/hospital_selection_model_revised.pkl'
+        data_dir = PROJECT_ROOT / "data" / "tokyo" / "processed"
+        model_path = data_dir / "hospital_selection_model_revised.pkl"
         
         try:
             with open(model_path, 'rb') as f:
@@ -2810,11 +2827,11 @@ def run_validation_simulation(
         print("データキャッシュ準備完了")
     
     # データの読み込み
-    base_dir = "data/tokyo"
+    base_dir = PROJECT_ROOT / "data" / "tokyo"
     
     # 救急隊と消防署の位置情報
     print("救急隊データを読み込み中...")
-    firestation_csv_path = f"{base_dir}/import/amb_place_master.csv"
+    firestation_csv_path = base_dir / "import" / "amb_place_master.csv"
     ambulance_data = pd.DataFrame()  # 初期化
     try:
         ambulance_data = pd.read_csv(firestation_csv_path, encoding='utf-8')
@@ -2843,8 +2860,8 @@ def run_validation_simulation(
     # キャリブレーション済み移動時間行列の読み込み (フェーズ別)
     print("キャリブレーション済み移動時間行列を読み込み中...")
     travel_time_matrices = {}
-    calibration_dir = f"{base_dir}/calibration2"
-    travel_time_stats_path = os.path.join(calibration_dir, 'travel_time_statistics_all_phases.json')
+    calibration_dir = base_dir / "calibration2"
+    travel_time_stats_path = calibration_dir / 'travel_time_statistics_all_phases.json'
 
     if not os.path.exists(travel_time_stats_path):
         print(f"エラー: 移動時間統計ファイルが見つかりません: {travel_time_stats_path}。処理を中止します。")
@@ -2874,7 +2891,7 @@ def run_validation_simulation(
             continue
 
         if matrix_filename:
-            matrix_path = os.path.join(calibration_dir, matrix_filename)
+            matrix_path = calibration_dir / matrix_filename
             if os.path.exists(matrix_path):
                 print(f"  > '{phase}'フェーズの行列を読み込みます: {matrix_filename} (モデル: {model_type_used})")
                 travel_time_matrices[phase] = np.load(matrix_path)
@@ -2887,14 +2904,14 @@ def run_validation_simulation(
 
     # 距離行列とグリッドマッピングの読み込み
     print("移動距離行列とグリッドマッピングを読み込み中...")
-    with open(f"{base_dir}/processed/travel_distance_matrix_res9.npy", 'rb') as f:
+    with open(base_dir / "processed" / "travel_distance_matrix_res9.npy", 'rb') as f:
         travel_distance_matrix = np.load(f)
-    with open(f"{base_dir}/processed/grid_mapping_res9.json", 'r', encoding='utf-8') as f:
+    with open(base_dir / "processed" / "grid_mapping_res9.json", 'r', encoding='utf-8') as f:
         grid_mapping = json.load(f)
         
     # 病院データの読み込み
     print("病院データを読み込み中...")
-    hospital_data = pd.read_csv(f"{base_dir}/import/hospital_master.csv", encoding='utf-8')
+    hospital_data = pd.read_csv(base_dir / "import" / "hospital_master.csv", encoding='utf-8')
     hospital_data = hospital_data.rename(columns={'hospital_latitude': 'latitude', 'hospital_longitude': 'longitude'})
     
     # 病院データの検証
@@ -2938,8 +2955,8 @@ def run_validation_simulation(
     print(f"期間内の事案数: {len(calls_df)}件")
     
     # サービス時間パラメータの読み込み
-    hierarchical_params_path = f"{base_dir}/service_time_analysis/lognormal_parameters_hierarchical.json"
-    standard_params_path = f"{base_dir}/service_time_analysis/v1/lognormal_parameters.json"
+    hierarchical_params_path = base_dir / "service_time_analysis" / "lognormal_parameters_hierarchical.json"
+    standard_params_path = base_dir / "service_time_analysis" / "v1" / "lognormal_parameters.json"
     
     print(f"[DEBUG] USE_ENHANCED_GENERATOR = {USE_ENHANCED_GENERATOR}")
     print(f"[DEBUG] 階層的パラメータファイルパス: {hierarchical_params_path}")
@@ -3104,8 +3121,9 @@ if __name__ == "__main__":
    initial_available_time_max = 120  # 120分   
    
    # --- バージョン管理付き出力ディレクトリの生成 ---
+   output_base_dir = PROJECT_ROOT / "data" / "tokyo" / "simulation_results"
    output_dir = get_versioned_output_dir(
-       base_dir='data/tokyo/simulation_results', 
+       base_dir=str(output_base_dir), 
        date_str=target_day_formatted, 
        duration_hours=duration
    )

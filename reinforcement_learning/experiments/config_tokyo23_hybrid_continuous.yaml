@@ -18,8 +18,8 @@ data_paths:
   travel_time_matrix: "data/tokyo/calibration2/linear_calibrated_response.npy"
 
 experiment:
-  name: "hybrid_continuous_ppo_tokyo23_v1"
-  description: "continuousモードの報酬設計をhybridに統合。duration=24,max_steps=3000"
+  name: "hybrid_continuous_ppo_mostweek_v1"
+  description: "件数が最も少ない週で実験"
   seed: 2025
   device: cuda
 
@@ -65,23 +65,23 @@ data:
     state_dim: 999  # ハイブリッドモードでも同じ状態空間
     action_dim: 192
 
-  max_steps_per_episode: 3000  
+  max_steps_per_episode: 5000  
   episode_duration_hours: 24
   
   # 学習期間（軽症系が多い期間と繁忙期の両方を含む）
   train_periods:
-    - start_date: "20230701"
-      end_date: "20230831"
+    - start_date: "20231224"
+      end_date: "20231230"
   
   eval_periods:
-    - start_date: "20240701"
-      end_date: "20240831"
+    - start_date: "20241222"
+      end_date: "20241228"
 
 # -------------------------------------------------------------------
 # PPOハイパーパラメータ (軽症系学習に最適化)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 5000
+  n_episodes: 8000
   batch_size: 1024
   
   # 学習率
@@ -125,14 +125,14 @@ reward:
         target: 6                  # 目標: 6分
         max_bonus: 50.0           # 最大ボーナス
         penalty_scale: 5.0        # ペナルティスケール
-        weight: 5.0               # 重症度重み
+        weight: 1.0               # 重症度重み
       
       # 中等症（PPO学習対象）
       moderate:
         target: 13                # 目標: 13分
         max_bonus: 20.0           # 最大ボーナス
         penalty_scale: 2.0        # ペナルティスケール
-        weight: 2.0               # 重症度重み
+        weight: 1.0               # 重症度重み
       
       # 軽症（PPO学習対象）
       mild:
@@ -199,11 +199,6 @@ teacher:
 # ネットワーク設定 (config_tokyo23.yamlから継承)
 # -------------------------------------------------------------------
 network:
-  state_encoder:
-    spatial_features: 16
-    temporal_features: 8
-    ambulance_features: 8
-    incident_features: 6
   
   actor:
     hidden_layers: [256, 128]
@@ -282,12 +277,12 @@ severity:
   categories:
     critical:
       conditions: ["重症", "重篤", "死亡"]
-      reward_weight: 5.0
+      reward_weight: 1.0
       time_limit_seconds: 360
     
     moderate:
       conditions: ["中等症"]
-      reward_weight: 2.0
+      reward_weight: 1.0
       time_limit_seconds: 780
     
     mild:
