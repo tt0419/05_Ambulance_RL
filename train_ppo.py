@@ -75,9 +75,19 @@ def print_training_info(config: dict, experiment_name: str, output_dir: Path):
     print(f"エピソード長: {config['data']['episode_duration_hours']}時間")
     
     print("\n【傷病度設定】")
+    # continuous_paramsのweightが設定されている場合はそれを優先表示
+    reward_config = config.get('reward', {})
+    core_config = reward_config.get('core', {})
+    continuous_params = core_config.get('continuous_params', {})
+    
     for category, info in config['severity']['categories'].items():
         conditions = ', '.join(info['conditions'])
-        print(f"  {category}: {conditions} (重み: {info['reward_weight']})")
+        # continuous_paramsのweightを優先（設定されている場合）
+        if category in continuous_params and 'weight' in continuous_params[category]:
+            weight = continuous_params[category]['weight']
+        else:
+            weight = info.get('reward_weight', 1.0)
+        print(f"  {category}: {conditions} (重み: {weight})")
     
     print("\n【評価設定】")
     print(f"評価間隔: {config['evaluation']['interval']}エピソードごと")

@@ -18,8 +18,8 @@ data_paths:
   travel_time_matrix: "data/tokyo/calibration2/linear_calibrated_response.npy"
 
 experiment:
-  name: "hybrid_continuous_ppo_mostweek_v1"
-  description: "件数が最も少ない週で実験"
+  name: "hybrid_continuous_ppo_mostweek_v3"
+  description: "件数が最も多い週で実験、PPOハイパラの調整"
   seed: 2025
   device: cuda
 
@@ -42,8 +42,8 @@ hybrid_mode:
   
   # ハイブリッドモード内の報酬重み付け
   reward_weights:
-    response_time: 0.5      # 応答時間重視（continuousの連続報酬を活かす）
-    coverage: 0.4           # カバレッジ
+    response_time: 0.7      # 応答時間重視（continuousの連続報酬を活かす）
+    coverage: 0.2           # カバレッジ
     workload_balance: 0.1   # 負荷バランス
 
 # -------------------------------------------------------------------
@@ -81,18 +81,18 @@ data:
 # PPOハイパーパラメータ (軽症系学習に最適化)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 8000
+  n_episodes: 3000
   batch_size: 1024
   
   # 学習率
   learning_rate:
-    actor: 0.0003
-    critic: 0.001
+    actor: 0.003
+    critic: 0.01
     scheduler: constant
   
   # PPOパラメータ
-  n_epochs: 6
-  clip_epsilon: 0.1
+  n_epochs: 10
+  clip_epsilon: 0.15
   gamma: 0.99
   gae_lambda: 0.95
   entropy_coef: 0.015
@@ -123,40 +123,44 @@ reward:
       # 重症系（直近隊運用なので参考値として保持）
       critical:
         target: 6                  # 目標: 6分
-        max_bonus: 50.0           # 最大ボーナス
-        penalty_scale: 5.0        # ペナルティスケール
-        weight: 1.0               # 重症度重み
+        max_bonus: 100.0           # 最大ボーナス
+        penalty_scale: 10.0        # ペナルティスケール
+        weight: 3.0               # 重症度重み
       
       # 中等症（PPO学習対象）
       moderate:
         target: 13                # 目標: 13分
-        max_bonus: 20.0           # 最大ボーナス
-        penalty_scale: 2.0        # ペナルティスケール
-        weight: 1.0               # 重症度重み
+        max_bonus: 30.0           # 最大ボーナス
+        penalty_scale: 3.0        # ペナルティスケール
+        weight: 1.5               # 重症度重み
       
       # 軽症（PPO学習対象）
       mild:
         target: 13                # 目標: 13分
         max_bonus: 10.0           # 最大ボーナス
         penalty_scale: 0.5        # ペナルティスケール（軽め）
-        weight: 1.0               # 重症度重み
+        weight: 0.5               # 重症度重み
     
     # ===================================================================
-    # hybrid固有パラメータ（カバレッジと負荷バランス）
-    # continuous報酬に追加される要素
+    # hybrid固有パラメータ（応答時間・カバレッジ・負荷バランス）
+    # 軽症系（軽症・中等症）のPPO学習に使用
     # ===================================================================
     hybrid_params:
+      # 応答時間関連パラメータ
+      time_penalty_per_minute: -0.3       # 1分あたりの時間ペナルティ
+      mild_under_13min_bonus: 10.0         # 軽症13分以内達成ボーナス
+      moderate_under_13min_bonus: 30.0   # 中等症13分以内達成ボーナス
+      over_13min_penalty: -15.0            # 13分超過時のペナルティ
+      over_20min_penalty: -50.0           # 20分超過時の追加ペナルティ
+      
       # カバレッジ関連ボーナス/ペナルティ
       good_coverage_bonus: 10.0           # カバレッジ0.8以上
       coverage_maintenance_bonus: 5.0     # カバレッジ0.6-0.8
       poor_coverage_penalty: -10.0        # カバレッジ0.6未満
       
       # 負荷バランス関連
-      balanced_workload_bonus: 2.0        # 均等な負荷分散
-      overloaded_penalty: -5.0            # 特定救急車の過負荷
-      
-      # 極端な遅延に対する追加ペナルティ（continuous報酬の補完）
-      over_20min_penalty: -30.0           # 20分超過時の追加ペナルティ
+      balanced_workload_bonus: 2.0        # 均等な負荷分散（平均5件未満/救急車）
+      overloaded_penalty: -5.0            # 特定救急車の過負荷（平均10件超過/救急車）
   
   # カバレッジパラメータ（重症系への準備度評価用）
   coverage_params:
@@ -171,7 +175,7 @@ reward:
     achievement_bonuses:
       # 重症系（直近隊運用の結果を評価）
       severe_6min_rate: 50.0            # 重症系6分以内率ボーナス
-      critical_6min_rate: 30.0          # 重篤6分以内率ボーナス
+      critical_6min_rate: 100.0          # 重篤6分以内率ボーナス
       
       # 軽症系（PPO学習の結果を評価）
       mild_13min_rate: 30.0             # 軽症13分以内率ボーナス

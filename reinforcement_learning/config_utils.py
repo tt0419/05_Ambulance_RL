@@ -64,5 +64,35 @@ def load_config_with_inheritance(config_path: str) -> dict:
     # 設定をマージ（specific_configでbase_configを上書き）
     merged_config = deep_merge_config(base_config, specific_config)
     
+    # continuous_paramsのweightをseverity.categories.reward_weightに自動同期
+    # （設定の一貫性を保つため）
+    _sync_continuous_params_weight(merged_config)
+    
     print("✓ 設定ファイル継承完了")
     return merged_config
+
+
+def _sync_continuous_params_weight(config: dict):
+    """
+    continuous_paramsのweightをseverity.categories.reward_weightに自動同期
+    
+    continuous_params.weightが設定されている場合、severity.categories.reward_weightを
+    自動的に更新して設定の一貫性を保つ
+    """
+    reward_config = config.get('reward', {})
+    core_config = reward_config.get('core', {})
+    continuous_params = core_config.get('continuous_params', {})
+    
+    # continuous_paramsにweightが設定されている場合のみ同期
+    if not continuous_params:
+        return
+    
+    severity_config = config.get('severity', {})
+    categories = severity_config.get('categories', {})
+    
+    # 各カテゴリのweightを同期
+    for category in ['critical', 'moderate', 'mild']:
+        if category in continuous_params and 'weight' in continuous_params[category]:
+            weight = continuous_params[category]['weight']
+            if category in categories:
+                categories[category]['reward_weight'] = weight

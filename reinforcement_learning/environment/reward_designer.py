@@ -59,22 +59,44 @@ class RewardDesigner:
             self.mode = core_config.get('mode', 'simple')
             self._load_mode_params_from_core(core_config)
         
-        # hybrid modeの場合、reward.core.hybrid_paramsを読み込み
+        # hybrid modeの場合、reward.core.hybrid_paramsとcontinuous_paramsを読み込み
         if self.mode == 'hybrid':
             reward_config = config.get('reward', {})
             core_config = reward_config.get('core', {})
+            
+            # hybrid_paramsを読み込み（個別設定 > ベース設定 > デフォルト）
             self.hybrid_params = core_config.get('hybrid_params', {
+                # 応答時間関連
                 'time_penalty_per_minute': -0.3,
                 'mild_under_13min_bonus': 5.0,
                 'moderate_under_13min_bonus': 10.0,
                 'over_13min_penalty': -5.0,
-                'over_20min_penalty': -50.0,
+                'over_20min_penalty': -30.0,
+                # カバレッジ関連
                 'good_coverage_bonus': 10.0,
                 'coverage_maintenance_bonus': 5.0,
                 'poor_coverage_penalty': -10.0,
+                # 負荷バランス関連
                 'balanced_workload_bonus': 2.0,
                 'overloaded_penalty': -5.0
             })
+            
+            # continuous_paramsも読み込み（将来の拡張や設定の一貫性のため）
+            # 個別設定ファイルの設定が最優先（deep_mergeで既に反映済み）
+            # デフォルト値は最小限に（個別設定で上書きされる想定）
+            default_continuous = {
+                'critical': {'target': 6, 'max_bonus': 50.0, 'penalty_scale': 5.0},
+                'moderate': {'target': 13, 'max_bonus': 20.0, 'penalty_scale': 2.0},
+                'mild': {'target': 13, 'max_bonus': 10.0, 'penalty_scale': 0.5}
+            }
+            config_params = core_config.get('continuous_params', {})
+            # 設定ファイルの値を優先し、不足している項目のみデフォルトで補完
+            self.continuous_params = {}
+            for category in ['critical', 'moderate', 'mild']:
+                self.continuous_params[category] = {
+                    **default_continuous.get(category, {}),
+                    **config_params.get(category, {})
+                }
         
         # ===== カバレッジ設定 =====
         # reward.core.coverage_impact_weightから読み込み（元の設計）
@@ -148,6 +170,12 @@ class RewardDesigner:
                     'over_6min': -10.0, 'over_13min': -15.0, 'per_minute_over': -2.0
                 })
             }
+        
+        elif self.mode == 'hybrid':
+            # hybridモードの場合、reward_modeからは読み込まず、
+            # reward.coreから読み込む（__init__で処理）
+            # ここでは何もしない（後でreward.coreから読み込まれる）
+            pass
     
     def _load_mode_params_from_core(self, core_config):
         """古い設定構造から報酬パラメータを読み込み（後方互換性）"""
@@ -163,10 +191,41 @@ class RewardDesigner:
             }
         
         elif self.mode == 'continuous':
-            self.continuous_params = core_config.get('continuous_params', {})
+            # continuous_paramsを読み込み（個別設定 > ベース設定 > デフォルト）
+            # デフォルト値は最小限に（個別設定で上書きされる想定）
+            default_continuous = {
+                'critical': {'target': 6, 'max_bonus': 50.0, 'penalty_scale': 5.0},
+                'moderate': {'target': 13, 'max_bonus': 20.0, 'penalty_scale': 2.0},
+                'mild': {'target': 13, 'max_bonus': 10.0, 'penalty_scale': 0.5}
+            }
+            config_params = core_config.get('continuous_params', {})
+            # 設定ファイルの値を優先し、不足している項目のみデフォルトで補完
+            self.continuous_params = {}
+            for category in ['critical', 'moderate', 'mild']:
+                self.continuous_params[category] = {
+                    **default_continuous.get(category, {}),
+                    **config_params.get(category, {})
+                }
         
         elif self.mode == 'discrete':
             self.discrete_params = core_config.get('discrete_params', {})
+        
+        elif self.mode == 'hybrid':
+            # hybridモードの場合、continuous_paramsも読み込む
+            # （将来の拡張や設定の一貫性のため）
+            if 'continuous_params' in core_config:
+                default_continuous = {
+                    'critical': {'target': 6, 'max_bonus': 50.0, 'penalty_scale': 5.0},
+                    'moderate': {'target': 13, 'max_bonus': 20.0, 'penalty_scale': 2.0},
+                    'mild': {'target': 13, 'max_bonus': 10.0, 'penalty_scale': 0.5}
+                }
+                config_params = core_config.get('continuous_params', {})
+                self.continuous_params = {}
+                for category in ['critical', 'moderate', 'mild']:
+                    self.continuous_params[category] = {
+                        **default_continuous.get(category, {}),
+                        **config_params.get(category, {})
+                    }
     
     def _init_hybrid_mode(self, hybrid_config):
         """ハイブリッドモードの初期化"""
@@ -335,14 +394,22 @@ class RewardDesigner:
         """ハイブリッドモードの報酬計算
         
         重症系: 0（直近隊運用、学習対象外）
-        軽症系: RT最小化 + カバレッジ維持 + 稼働バランス
+        軽症系: 応答時間報酬 + カバレッジ報酬 + 負荷バランス報酬
+        重み付けは hybrid_mode.reward_weights で設定（デフォルト: RT 70%, Coverage 20%, Workload 10%）
+        
+        使用パラメータ（すべて reward.core.hybrid_params から読み込み）:
+        - 応答時間: time_penalty_per_minute, mild_under_13min_bonus, moderate_under_13min_bonus,
+                    over_13min_penalty, over_20min_penalty
+        - カバレッジ: good_coverage_bonus, coverage_maintenance_bonus, poor_coverage_penalty
+        - 負荷バランス: balanced_workload_bonus, overloaded_penalty
         """
         # 重症系は報酬なし（直近隊運用）
         if severity in self.severe_conditions:
             return 0.0
         
-        # === A: 応答時間報酬（40%） ===
         params = self.hybrid_params
+        
+        # === A: 応答時間報酬 ===
         time_reward = params['time_penalty_per_minute'] * response_time_minutes
         
         # 傷病度別ボーナス
@@ -357,7 +424,7 @@ class RewardDesigner:
         if response_time_minutes > 20:
             time_reward += params['over_20min_penalty']
         
-        # === B: カバレッジ報酬（50%） ===
+        # === B: カバレッジ報酬 ===
         coverage_reward = 0.0
         if coverage_after >= 0.8:
             coverage_reward = params['good_coverage_bonus']
@@ -366,7 +433,7 @@ class RewardDesigner:
         else:
             coverage_reward = params['poor_coverage_penalty']
         
-        # === C: 稼働バランス報酬（10%） ===
+        # === C: 負荷バランス報酬 ===
         workload_reward = 0.0
         if additional_info:
             avg_calls = additional_info.get('avg_calls_per_ambulance', 0)
@@ -376,7 +443,7 @@ class RewardDesigner:
                 elif avg_calls > 10:  # 過負荷
                     workload_reward = params['overloaded_penalty']
         
-        # 重み付け合計
+        # 重み付け合計（hybrid_mode.reward_weights で設定）
         total_reward = (
             time_reward * self.weight_rt +
             coverage_reward * self.weight_coverage +
