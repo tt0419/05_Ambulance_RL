@@ -112,17 +112,26 @@ class PPOTrainer:
                 print("WandBを無効にして学習を続行します...")
                 self.use_wandb = False
         
-    def train(self):
+    def train(self, start_episode: int = 0):
         """
         学習のメインループ
+        
+        Args:
+            start_episode: 開始エピソード番号（チェックポイントから再開時に使用）
         """
         print("\n" + "=" * 60)
         print("PPO学習開始")
+        if start_episode > 0:
+            print(f"チェックポイントからの再開: エピソード {start_episode} から")
         print("=" * 60)
         
         start_time = time.time()
         
-        for episode in range(1, self.n_episodes + 1):
+        for episode in range(start_episode + 1, self.n_episodes + 1):
+            # カリキュラム学習の更新
+            if hasattr(self.env, 'reward_designer'):
+                self.env.reward_designer.update_curriculum(episode)
+            
             # エピソード実行
             episode_reward, episode_length, episode_stats = self._run_episode(training=True)
             
@@ -461,6 +470,12 @@ class PPOTrainer:
                     'train/kl_divergence': latest_stats.get('kl_div', 0),
                     'train/entropy': latest_stats.get('entropy', 0),
                 })
+            
+            # coverage_awareモード用のメトリクス
+            if stats and 'coverage_loss' in stats and stats['coverage_loss']:
+                log_data['reward/coverage_loss'] = np.mean(stats['coverage_loss'])
+            if stats and 'coverage_component' in stats and stats['coverage_component']:
+                log_data['reward/coverage_component'] = np.mean(stats['coverage_component'])
             
             wandb.log(log_data)
         

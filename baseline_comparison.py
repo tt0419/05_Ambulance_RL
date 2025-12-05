@@ -6,6 +6,7 @@ baseline_comparison.py
 # OpenMPエラーの回避（ライブラリ競合対策）
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+os.environ['WANDB_MODE'] = 'disabled'  # wandbを無効化
 import json
 import pandas as pd
 import numpy as np
@@ -49,8 +50,8 @@ from constants import SEVERITY_GROUPS
 # ============================================================
 EXPERIMENT_CONFIG = {
     # 比較する戦略のリスト（ここで戦略を追加・削除）
-    'strategies': ['closest', 
-                   'severity_based',
+    'strategies': [#'closest', 
+                   #'severity_based',
                    #'advanced_severity',
                    'ppo_agent',
                    #'second_ride',
@@ -96,9 +97,9 @@ EXPERIMENT_CONFIG = {
             'time_limit_seconds': 780
         },
         'ppo_agent': {
-            'model_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251124_113225' / 'checkpoints' / 'best_model.pth'),
+            'model_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251204_133213' / 'checkpoints' / 'best_model.pth'),
             # config_path: 設定ファイルのパス（オプション、存在しない場合はチェックポイントから読み込む）
-            'config_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251124_113225' / 'configs' / 'config.yaml'),
+            'config_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251204_133213' / 'configs' / 'config.yaml'),
             'hybrid_mode': True,
             'severe_conditions': ['重症', '重篤', '死亡'],
             'mild_conditions': ['軽症', '中等症']
@@ -1163,8 +1164,8 @@ if __name__ == "__main__":
     # ============================================================
     EXPERIMENT_PARAMS = {
         # 期間指定（ランダムサンプリング）
-        'start_date': "20241215",
-        'end_date': "20241221",  # 1ヶ月間
+        'start_date': "20240128",
+        'end_date': "20240203",  # 1ヶ月間
         
         # エピソード設定
         'episode_duration_hours': 24,  # 24時間エピソード

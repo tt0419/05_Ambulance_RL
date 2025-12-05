@@ -851,7 +851,8 @@ class EMSEnvironment:
                     closest_action = self._get_closest_ambulance_action(current_incident)
                     
                     # 直近隊で配車
-                    dispatch_result = self._dispatch_ambulance(closest_action)
+                    available_before = self._get_available_ambulance_ids()
+                    dispatch_result = self._dispatch_ambulance(closest_action, available_before)
                     
                     # 報酬は0（学習対象外）
                     reward = 0.0
@@ -872,7 +873,8 @@ class EMSEnvironment:
                     self.ppo_dispatch_count += 1
                     
                     # PPOの行動を実行
-                    dispatch_result = self._dispatch_ambulance(action)
+                    available_before = self._get_available_ambulance_ids()
+                    dispatch_result = self._dispatch_ambulance(action, available_before)
                     
                     # カバレッジ情報を計算
                     coverage_info = self._calculate_coverage_info()
@@ -911,7 +913,8 @@ class EMSEnvironment:
                             f"vs 最適: 救急車{optimal_action}({optimal_time/60:.1f}分)")
                 
                 # 行動の実行（救急車の配車）
-                dispatch_result = self._dispatch_ambulance(action)
+                available_before = self._get_available_ambulance_ids()
+                dispatch_result = self._dispatch_ambulance(action, available_before)
                 
                 # 報酬の計算
                 reward = self._calculate_reward(dispatch_result)
@@ -1041,6 +1044,139 @@ class EMSEnvironment:
             'min_coverage': min(coverage_scores) if coverage_scores else 0.0
         }
 
+    def _get_available_ambulance_ids(self) -> List[int]:
+        """現在利用可能な救急車IDのリストを取得"""
+        return [
+            amb_id for amb_id, state in self.ambulance_states.items()
+            if state.get('status') == 'available'
+        ]
+    
+    def _calculate_coverage_loss(self,
+                                 selected_ambulance_id: int,
+                                 available_ambulances_before: Optional[List[int]],
+                                 request_h3: Optional[str]) -> float:
+        """選択した救急車によるカバレッジ損失を計算"""
+        if self.reward_designer.mode != 'coverage_aware':
+            return 0.0
+        if selected_ambulance_id not in self.ambulance_states:
+            return 0.0
+        if not available_ambulances_before:
+            return 0.0
+        
+        selected_state = self.ambulance_states[selected_ambulance_id]
+        station_h3 = selected_state.get('station_h3') or selected_state.get('current_h3')
+        if not station_h3:
+            return 0.0
+        
+        coverage_config = self.config.get('reward', {}).get('core', {}).get('mild_params', {})
+        sample_points = coverage_config.get('sample_points', 20)
+        sample_radius = coverage_config.get('sample_radius', 2)
+        weight_6min = coverage_config.get('coverage_6min_weight', 0.5)
+        weight_13min = coverage_config.get('coverage_13min_weight', 0.5)
+        thresholds = self.config.get('severity', {}).get('thresholds', {})
+        time_threshold_6 = thresholds.get('golden_time', 360)
+        time_threshold_13 = thresholds.get('standard_time', 780)
+        
+        remaining_ambulances = [
+            amb_id for amb_id in available_ambulances_before
+            if amb_id != selected_ambulance_id and amb_id in self.ambulance_states
+        ]
+        if not remaining_ambulances:
+            return 1.0
+        
+        samples = self._get_coverage_sample_points_for_loss(station_h3, sample_points, sample_radius)
+        if not samples:
+            return self._simple_coverage_loss(station_h3, remaining_ambulances)
+        
+        coverage_6min_before = coverage_6min_after = 0
+        coverage_13min_before = coverage_13min_after = 0
+        
+        for point_h3 in samples:
+            min_before = self._get_min_response_time_for_coverage(point_h3, available_ambulances_before)
+            min_after = self._get_min_response_time_for_coverage(point_h3, remaining_ambulances)
+            
+            if min_before <= time_threshold_6:
+                coverage_6min_before += 1
+            if min_before <= time_threshold_13:
+                coverage_13min_before += 1
+            
+            if min_after <= time_threshold_6:
+                coverage_6min_after += 1
+            if min_after <= time_threshold_13:
+                coverage_13min_after += 1
+        
+        total_points = len(samples)
+        if total_points == 0:
+            return 0.0
+        
+        loss_6 = (coverage_6min_before - coverage_6min_after) / total_points
+        loss_13 = (coverage_13min_before - coverage_13min_after) / total_points
+        combined_loss = loss_6 * weight_6min + loss_13 * weight_13min
+        return max(0.0, min(1.0, combined_loss))
+    
+    def _get_coverage_sample_points_for_loss(self, center_h3: str, sample_size: int, radius: int) -> List[str]:
+        """カバレッジ計算用のサンプルポイントを取得"""
+        if not center_h3:
+            return []
+        try:
+            candidates = h3.grid_disk(center_h3, radius)
+        except Exception:
+            return []
+        
+        valid = [cell for cell in candidates if cell in self.grid_mapping]
+        if len(valid) <= sample_size:
+            return valid
+        return random.sample(valid, sample_size)
+    
+    def _get_min_response_time_for_coverage(self, target_h3: str, ambulance_ids: List[int]) -> float:
+        """指定地点への最小応答時間を計算"""
+        if not ambulance_ids:
+            return float('inf')
+        
+        min_time = float('inf')
+        for amb_id in ambulance_ids:
+            state = self.ambulance_states.get(amb_id)
+            if not state:
+                continue
+            travel_time = self._calculate_travel_time(state.get('current_h3'), target_h3)
+            if travel_time < min_time:
+                min_time = travel_time
+        return min_time
+    
+    def _simple_coverage_loss(self, station_h3: str, remaining_ambulances: List[int]) -> float:
+        """簡易的なカバレッジ損失（近隣救急車数ベース）"""
+        threshold = 600  # 10分
+        nearby = 0
+        for amb_id in remaining_ambulances:
+            state = self.ambulance_states.get(amb_id)
+            if not state:
+                continue
+            travel_time = self._calculate_travel_time(state.get('current_h3'), station_h3)
+            if travel_time <= threshold:
+                nearby += 1
+        return 1.0 / (nearby + 1)
+    
+    def _calculate_coverage_component_for_stats(self, severity: str, coverage_loss: float) -> float:
+        """統計記録用のcoverage_componentを計算"""
+        if not self.reward_designer.coverage_aware_params:
+            return 0.0
+        
+        from .reward_designer import severity_to_category
+        params = self.reward_designer.coverage_aware_params
+        category = severity_to_category(severity)
+        coverage_loss = max(0.0, min(1.0, coverage_loss or 0.0))
+        
+        if category == 'critical':
+            severe = params['severe']
+            coverage_component = -coverage_loss * severe.get('coverage_weight', 0.0) * abs(severe.get('coverage_loss_penalty_scale', 0.0))
+            return coverage_component
+        
+        mild = params['mild']
+        coverage_weight = mild.get('coverage_weight', 0.4)
+        coverage_scale = mild.get('coverage_loss_penalty_scale', -100.0)
+        coverage_component = coverage_loss * coverage_scale * coverage_weight
+        return coverage_component
+
     def is_high_risk_area(self, area):
         """高リスク地域の判定（簡易版）"""
         # 実際の実装では、過去の重症系事案データから判定
@@ -1068,7 +1204,7 @@ class EMSEnvironment:
         return ['default_area']
 
     
-    def _dispatch_ambulance(self, action: int) -> Dict:
+    def _dispatch_ambulance(self, action: int, available_snapshot: Optional[List[int]] = None) -> Dict:
         """救急車を配車"""
         if self.pending_call is None:
             return {'success': False, 'reason': 'no_pending_call'}
@@ -1076,6 +1212,9 @@ class EMSEnvironment:
         # 行動の妥当性チェック
         if action >= len(self.ambulance_states):
             return {'success': False, 'reason': 'invalid_action'}
+        
+        if available_snapshot is None:
+            available_snapshot = self._get_available_ambulance_ids()
         
         amb_state = self.ambulance_states[action]
         
@@ -1109,7 +1248,9 @@ class EMSEnvironment:
             'response_time': travel_time,
             'response_time_minutes': travel_time / 60.0,
             'estimated_completion_time': completion_time,
-            'matched_teacher': self.current_matched_teacher
+            'matched_teacher': self.current_matched_teacher,
+            'available_ambulances_before': list(available_snapshot) if available_snapshot else [],
+            'request_h3': self.pending_call['h3_index']
         }
         
         return result
@@ -1509,11 +1650,20 @@ class EMSEnvironment:
         
         # カバレッジ影響の計算（簡易版）
         coverage_impact = self._calculate_coverage_impact(dispatch_result.get('ambulance_id'))
+        coverage_loss = 0.0
+        if (self.reward_designer.mode == 'coverage_aware' and 
+                not is_severe_condition(severity)):
+            coverage_loss = self._calculate_coverage_loss(
+                dispatch_result.get('ambulance_id'),
+                dispatch_result.get('available_ambulances_before'),
+                dispatch_result.get('request_h3')
+            )
         
         # 追加情報（教師との一致など）
         additional_info = {
             'matched_teacher': dispatch_result.get('matched_teacher', False),
-            'distance_rank': dispatch_result.get('distance_rank', None)
+            'distance_rank': dispatch_result.get('distance_rank', None),
+            'coverage_loss': coverage_loss
         }
         
         # RewardDesignerで報酬計算
@@ -1521,8 +1671,18 @@ class EMSEnvironment:
             severity=severity,
             response_time=response_time,
             coverage_impact=coverage_impact,
+            coverage_loss=coverage_loss,
             additional_info=additional_info
         )
+        
+        # coverage_lossとcoverage_componentをdispatch_resultに追加（統計記録用）
+        dispatch_result['coverage_loss'] = coverage_loss
+        if self.reward_designer.mode == 'coverage_aware':
+            # coverage_componentを計算（reward_designerのロジックを再現）
+            coverage_component = self._calculate_coverage_component_for_stats(
+                severity, coverage_loss
+            )
+            dispatch_result['coverage_component'] = coverage_component
         
         # デバッグ用ログ（最初の数回のみ）
         if hasattr(self, '_debug_reward_count'):
@@ -1569,6 +1729,18 @@ class EMSEnvironment:
         
         # 拡張統計の更新
         self._update_extended_statistics(dispatch_result)
+        
+        # coverage_awareモード用の統計記録
+        if self.reward_designer.mode == 'coverage_aware':
+            if 'coverage_loss' not in self.episode_stats:
+                self.episode_stats['coverage_loss'] = []
+            if 'coverage_component' not in self.episode_stats:
+                self.episode_stats['coverage_component'] = []
+            
+            if 'coverage_loss' in dispatch_result:
+                self.episode_stats['coverage_loss'].append(dispatch_result['coverage_loss'])
+            if 'coverage_component' in dispatch_result:
+                self.episode_stats['coverage_component'].append(dispatch_result['coverage_component'])
     
     def _update_extended_statistics(self, dispatch_result: Dict):
         """拡張統計情報の更新"""
@@ -1977,12 +2149,75 @@ class EMSEnvironment:
         }
     
     def get_action_mask(self) -> np.ndarray:
-        """利用可能な行動のマスクを取得"""
+        """利用可能な行動のマスクを取得（カバレッジ考慮型対応）"""
         mask = np.zeros(self.action_dim, dtype=bool)
         
+        # 基本マスク：利用可能な救急車
         for amb_id, amb_state in self.ambulance_states.items():
             if amb_id < self.action_dim and amb_state['status'] == 'available':
                 mask[amb_id] = True
+        
+        # coverage_awareモードでアクションマスクが有効な場合、追加フィルタリング
+        if (self.reward_designer.mode == 'coverage_aware' and 
+            self.pending_call is not None):
+            
+            action_mask_config = self.reward_designer.config.get('reward', {}).get('core', {}).get('action_mask', {})
+            if action_mask_config.get('enabled', False):
+                severity = self.pending_call.get('severity', '')
+                request_h3 = self.pending_call.get('h3_index')
+                
+                # 重症系の場合は全て許可（時間制約なし）
+                if is_severe_condition(severity):
+                    return mask
+                
+                # 軽症系の場合、時間制約とカバレッジ損失でフィルタ
+                filtered_mask = np.zeros(self.action_dim, dtype=bool)
+                available_ambulances = [amb_id for amb_id in range(self.action_dim) if mask[amb_id]]
+                
+                # 時間制約のチェック
+                time_limit_seconds = 780  # 13分 = 780秒
+                if action_mask_config.get('mild_time_limit_mask', False):
+                    time_limit_seconds = self.reward_designer.coverage_aware_params.get('mild', {}).get('time_limit_seconds', 780)
+                
+                # カバレッジ損失閾値
+                coverage_threshold = action_mask_config.get('coverage_loss_threshold', 0.8)
+                use_coverage_mask = action_mask_config.get('coverage_loss_mask', False)
+                
+                for amb_id in available_ambulances:
+                    amb_state = self.ambulance_states.get(amb_id)
+                    if not amb_state:
+                        continue
+                    
+                    # 応答時間をチェック
+                    response_time = self._calculate_travel_time(
+                        amb_state['current_h3'],
+                        request_h3
+                    )
+                    
+                    # 時間制約チェック
+                    if response_time > time_limit_seconds:
+                        continue
+                    
+                    # カバレッジ損失チェック
+                    if use_coverage_mask:
+                        try:
+                            coverage_loss = self._calculate_coverage_loss(
+                                amb_id,
+                                available_ambulances,
+                                request_h3
+                            )
+                            if coverage_loss >= coverage_threshold:
+                                continue
+                        except Exception:
+                            # エラー時は許可（フォールバック）
+                            pass
+                    
+                    filtered_mask[amb_id] = True
+                
+                # フィルタリング後も選択肢があるか確認
+                if filtered_mask.sum() > 0:
+                    return filtered_mask
+                # 全てマスクされた場合は元のマスクを返す（最低限の選択肢を確保）
         
         return mask
  

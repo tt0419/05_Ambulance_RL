@@ -290,11 +290,23 @@ def main():
         print("\nトレーナーを初期化中...")
         trainer = PPOTrainer(agent, env, config, output_dir)
         
+        # チェックポイントからの復帰
+        start_episode = 0
+        if args.resume:
+            print(f"\nチェックポイントから復帰: {args.resume}")
+            trainer.load_checkpoint(args.resume)
+            # チェックポイントファイル名からエピソード番号を抽出
+            import re
+            match = re.search(r'checkpoint_ep(\d+)\.pth', args.resume)
+            if match:
+                start_episode = int(match.group(1))
+                print(f"エピソード {start_episode} から再開します")
+        
         # 学習の実行
         print("\n学習を開始します...")
         print("-" * 60)
         
-        best_reward = trainer.train()
+        best_reward = trainer.train(start_episode=start_episode)
         
         # モデル保存
         model_dir = 'models'
