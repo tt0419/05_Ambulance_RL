@@ -31,7 +31,7 @@ if str(fix_dir) not in sys.path:
 
 # 必要なモジュールをインポート
 from data_cache import get_emergency_data_cache
-from constants import SEVERITY_GROUPS, is_severe_condition
+from constants import SEVERITY_GROUPS, is_severe_condition, get_severity_time_limit
 
 # ServiceTimeGeneratorEnhancedのインポート
 service_time_analysis_path = PROJECT_ROOT / "data" / "tokyo" / "service_time_analysis"
@@ -218,7 +218,7 @@ class EMSEnvironment:
         if self.use_probabilistic_selection:
             self._load_hospital_selection_model()
         
-        # ハイブリッドモード設定
+        # ハイブリッドモード設定（従来版）
         self.hybrid_mode = self.config.get('hybrid_mode', {}).get('enabled', False)
         if self.hybrid_mode:
             self.severe_conditions = ['重症', '重篤', '死亡']
@@ -226,6 +226,27 @@ class EMSEnvironment:
             self.direct_dispatch_count = 0  # 直近隊運用の回数
             self.ppo_dispatch_count = 0     # PPO運用の回数
             print("ハイブリッドモード有効: 重症系は直近隊、軽症系はPPO学習")
+        
+        # ★★★ ハイブリッドモードv2設定（新機能）★★★
+        self.hybrid_v2_enabled = self._is_hybrid_v2_enabled()
+        if self.hybrid_v2_enabled:
+            self.severe_conditions = ['重症', '重篤', '死亡']
+            self.mild_conditions = ['軽症', '中等症']
+            self.direct_dispatch_count = 0  # 直近隊運用の回数
+            self.ppo_dispatch_count = 0     # PPO運用（フィルタリング後選択）の回数
+            self.hybrid_v2_stats = {
+                'filtered_candidates_count': [],  # 絞り込み後の候補数
+                'severe_cases_count': 0,          # 重症系事案数
+                'mild_cases_count': 0             # 軽症系事案数
+            }
+            hybrid_v2_config = self.config.get('hybrid_v2', {})
+            print("=" * 60)
+            print("ハイブリッドモードv2有効:")
+            print("  - 重症系: 直近隊選択（固定、学習対象外）")
+            print("  - 軽症系: 候補絞り込み後、PPOが選択（学習対象）")
+            print(f"  - カバレッジ損失閾値: {hybrid_v2_config.get('mild_filtering', {}).get('coverage_loss_threshold', 0.8)}")
+            print(f"  - 最低候補数: {hybrid_v2_config.get('mild_filtering', {}).get('min_candidates', 3)}")
+            print("=" * 60)
         
     def _row_is_virtual(self, row: pd.Series) -> bool:
         """DataFrame行から仮想フラグを安全に判定（NaNはFalse）。"""
@@ -247,6 +268,112 @@ class EMSEnvironment:
         if isinstance(value, (int, float)):
             return int(value) == 1
         return False
+    
+    # ===================================================================
+    # ハイブリッドモードv2 メソッド群
+    # ===================================================================
+    
+    def _is_hybrid_v2_enabled(self) -> bool:
+        """ハイブリッドモードv2が有効かチェック"""
+        return self.config.get('hybrid_v2', {}).get('enabled', False)
+    
+    def _get_filtered_mask_for_mild(self, base_mask: np.ndarray, severity: str) -> np.ndarray:
+        """
+        軽症系の候補絞り込み（傷病度考慮運用と同等の条件）
+        
+        Args:
+            base_mask: 基本の行動マスク（利用可能な救急車）
+            severity: 傷病度
+            
+        Returns:
+            フィルタリング後の行動マスク
+        """
+        filtered_mask = np.zeros(self.action_dim, dtype=bool)
+        
+        request_h3 = self.pending_call.get('h3_index')
+        available_ambulances = [amb_id for amb_id in range(self.action_dim) if base_mask[amb_id]]
+        
+        if not available_ambulances:
+            return base_mask
+        
+        # ハイブリッドv2設定を読み込み
+        hybrid_config = self.config.get('hybrid_v2', {}).get('mild_filtering', {})
+        
+        # 時間制限の取得（設定から、またはデフォルト値）
+        use_time_limit = hybrid_config.get('use_time_limit', True)
+        if use_time_limit:
+            # 設定された時間制限を使用（なければconstantsのデフォルト）
+            time_limit = hybrid_config.get('time_limit_seconds', get_severity_time_limit(severity))
+        else:
+            time_limit = float('inf')
+        
+        # カバレッジ損失フィルタリング設定
+        use_coverage_filter = hybrid_config.get('use_coverage_filter', True)
+        coverage_loss_threshold = hybrid_config.get('coverage_loss_threshold', 0.8)
+        min_candidates = hybrid_config.get('min_candidates', 3)
+        
+        candidates = []
+        
+        for amb_id in available_ambulances:
+            amb_state = self.ambulance_states.get(amb_id)
+            if not amb_state:
+                continue
+            
+            # 応答時間をチェック
+            response_time = self._calculate_travel_time(
+                amb_state['current_h3'],
+                request_h3
+            )
+            
+            # 時間制限チェック
+            if response_time > time_limit:
+                continue
+            
+            # カバレッジ損失をチェック（オプション）
+            coverage_loss = 0.0
+            if use_coverage_filter:
+                try:
+                    coverage_loss = self._calculate_coverage_loss(
+                        amb_id,
+                        available_ambulances,
+                        request_h3
+                    )
+                except Exception:
+                    coverage_loss = 0.0
+            
+            candidates.append({
+                'amb_id': amb_id,
+                'response_time': response_time,
+                'coverage_loss': coverage_loss
+            })
+        
+        # カバレッジ損失でフィルタリング
+        if use_coverage_filter and candidates:
+            good_candidates = [c for c in candidates if c['coverage_loss'] < coverage_loss_threshold]
+            
+            # 最低候補数を確保
+            if len(good_candidates) < min_candidates:
+                remaining = sorted(
+                    [c for c in candidates if c not in good_candidates],
+                    key=lambda x: x['coverage_loss']
+                )
+                good_candidates.extend(remaining[:min_candidates - len(good_candidates)])
+            
+            candidates = good_candidates
+        
+        # フィルタリング後のマスクを作成
+        for c in candidates:
+            filtered_mask[c['amb_id']] = True
+        
+        # 候補がない場合は元のマスクを返す
+        if not filtered_mask.any():
+            return base_mask
+        
+        # 統計記録（ハイブリッドv2が有効な場合）
+        if hasattr(self, 'hybrid_v2_stats'):
+            self.hybrid_v2_stats['filtered_candidates_count'].append(filtered_mask.sum())
+        
+        return filtered_mask
 
     def _setup_severity_mapping(self):
         """傷病度マッピングの設定"""
@@ -827,7 +954,7 @@ class EMSEnvironment:
     
     def step(self, action: int) -> StepResult:
         """
-        環境のステップ実行（ハイブリッドモード対応版）
+        環境のステップ実行（ハイブリッドモードv2対応版）
         
         Args:
             action: 選択された救急車のインデックス
@@ -839,7 +966,94 @@ class EMSEnvironment:
             # 現在の事案を取得
             current_incident = self.pending_call
             
-            # ハイブリッドモード：重症系は直近隊運用を強制
+            # ★★★ ハイブリッドモードv2: 重症系は直近隊を強制 ★★★
+            if self._is_hybrid_v2_enabled() and current_incident:
+                severity = current_incident.get('severity', '')
+                
+                if is_severe_condition(severity):
+                    # 重症系: 直近隊選択を強制（学習対象外）
+                    optimal_action = self.get_optimal_action()
+                    if optimal_action is not None:
+                        action = optimal_action
+                    
+                    self.direct_dispatch_count += 1
+                    if hasattr(self, 'hybrid_v2_stats'):
+                        self.hybrid_v2_stats['severe_cases_count'] += 1
+                    
+                    # 直近隊で配車
+                    available_before = self._get_available_ambulance_ids()
+                    dispatch_result = self._dispatch_ambulance(action, available_before)
+                    
+                    # 報酬は0（学習対象外）
+                    reward = 0.0
+                    
+                    # 統計情報を記録
+                    info = {
+                        'dispatch_result': dispatch_result,
+                        'dispatch_type': 'hybrid_v2_direct_closest',
+                        'severity': severity,
+                        'response_time': dispatch_result.get('response_time', 0),
+                        'skipped_learning': True,  # 学習対象外フラグ
+                        'episode_stats': self.episode_stats.copy(),
+                        'step': self.episode_step
+                    }
+                    
+                else:
+                    # 軽症系: PPOのフィルタリング済み選択を使用（学習対象）
+                    self.ppo_dispatch_count += 1
+                    if hasattr(self, 'hybrid_v2_stats'):
+                        self.hybrid_v2_stats['mild_cases_count'] += 1
+                    
+                    # PPOの行動を実行
+                    available_before = self._get_available_ambulance_ids()
+                    dispatch_result = self._dispatch_ambulance(action, available_before)
+                    
+                    # カバレッジ情報を計算
+                    coverage_info = self._calculate_coverage_info()
+                    
+                    # 報酬計算（学習対象）
+                    reward = self._calculate_reward(dispatch_result)
+                    
+                    # 追加情報
+                    info = {
+                        'dispatch_result': dispatch_result,
+                        'outcome': {
+                            'severity': severity,
+                            'response_time': dispatch_result.get('response_time', 0)
+                        },
+                        'coverage_info': coverage_info,
+                        'dispatch_type': 'hybrid_v2_ppo_filtered',
+                        'severity': severity,
+                        'skipped_learning': False,  # 学習対象
+                        'episode_stats': self.episode_stats.copy(),
+                        'step': self.episode_step
+                    }
+                
+                # ログを記録
+                if dispatch_result['success']:
+                    self._log_dispatch_action(dispatch_result, self.ambulance_states[dispatch_result['ambulance_id']])
+                
+                # 統計情報の更新
+                self._update_statistics(dispatch_result)
+                
+                # 次の事案へ進む
+                self._advance_to_next_call()
+                
+                # エピソード終了判定
+                done = self._is_episode_done()
+                
+                # 次の観測を取得
+                observation = self._get_observation()
+                
+                # StepResultオブジェクトを返す
+                return StepResult(
+                    observation=observation,
+                    reward=reward,
+                    done=done,
+                    info=info
+                )
+            
+            # 従来のハイブリッドモード：重症系は直近隊運用を強制
             if self.hybrid_mode and current_incident:
                 severity = current_incident.get('severity', '')
                 
@@ -2149,7 +2363,7 @@ class EMSEnvironment:
         }
     
     def get_action_mask(self) -> np.ndarray:
-        """利用可能な行動のマスクを取得（カバレッジ考慮型対応）"""
+        """利用可能な行動のマスクを取得（ハイブリッドv2対応版）"""
         mask = np.zeros(self.action_dim, dtype=bool)
         
         # 基本マスク：利用可能な救急車
@@ -2157,13 +2371,25 @@ class EMSEnvironment:
             if amb_id < self.action_dim and amb_state['status'] == 'available':
                 mask[amb_id] = True
         
+        if self.pending_call is None:
+            return mask
+        
+        severity = self.pending_call.get('severity', '')
+        
+        # ★★★ ハイブリッドモードv2対応 ★★★
+        if self._is_hybrid_v2_enabled():
+            # 重症系は全救急車を許可（直近隊選択はstep()で強制）
+            if is_severe_condition(severity):
+                return mask
+            
+            # 軽症系のフィルタリング（傷病度考慮運用と同等の条件）
+            return self._get_filtered_mask_for_mild(mask, severity)
+        
         # coverage_awareモードでアクションマスクが有効な場合、追加フィルタリング
-        if (self.reward_designer.mode == 'coverage_aware' and 
-            self.pending_call is not None):
+        if (self.reward_designer.mode == 'coverage_aware'):
             
             action_mask_config = self.reward_designer.config.get('reward', {}).get('core', {}).get('action_mask', {})
             if action_mask_config.get('enabled', False):
-                severity = self.pending_call.get('severity', '')
                 request_h3 = self.pending_call.get('h3_index')
                 
                 # 重症系の場合は全て許可（時間制約なし）

@@ -140,7 +140,7 @@ class DispatchStrategy(ABC):
         return severity_map.get(severity, DispatchPriority.LOW)
 
 class ClosestAmbulanceStrategy(DispatchStrategy):
-    """最寄り救急車戦略（現行）"""
+    """最寄り救急車戦略（現行）- 移動時間ベース"""
     
     def __init__(self):
         super().__init__("closest", "rule_based")
@@ -154,7 +154,7 @@ class ClosestAmbulanceStrategy(DispatchStrategy):
                         available_ambulances: List[AmbulanceInfo],
                         travel_time_func: callable,
                         context: DispatchContext) -> Optional[AmbulanceInfo]:
-        """最も近い救急車を選択"""
+        """最も近い救急車を選択（移動時間ベース）"""
         if not available_ambulances:
             return None
             
@@ -168,6 +168,127 @@ class ClosestAmbulanceStrategy(DispatchStrategy):
                 closest_ambulance = ambulance
                 
         return closest_ambulance
+
+
+class ClosestDistanceStrategy(DispatchStrategy):
+    """最寄り救急車戦略（移動距離ベース）
+    
+    移動時間ではなく、移動距離行列から最短距離の救急車を選択する戦略。
+    """
+    
+    def __init__(self):
+        super().__init__("closest_distance", "rule_based")
+        self.travel_distance_matrix = None
+        self.grid_mapping = None
+        
+    def initialize(self, config: Dict):
+        """初期化: 移動距離行列とグリッドマッピングを読み込む"""
+        self.config = config
+        
+        print("ClosestDistanceStrategy初期化開始...")
+        
+        # グリッドマッピングの読み込み
+        try:
+            grid_mapping_path = PROJECT_ROOT / 'data' / 'tokyo' / 'processed' / 'grid_mapping_res9.json'
+            with open(grid_mapping_path, 'r', encoding='utf-8') as f:
+                self.grid_mapping = json.load(f)
+            print(f"  グリッドマッピング読み込み成功: {len(self.grid_mapping)}グリッド")
+        except Exception as e:
+            raise RuntimeError(f"グリッドマッピングの読み込みエラー: {e}")
+        
+        # 移動距離行列の読み込み
+        try:
+            distance_matrix_path = PROJECT_ROOT / 'data' / 'tokyo' / 'processed' / 'travel_distance_matrix_res9.npy'
+            self.travel_distance_matrix = np.load(distance_matrix_path)
+            print(f"  移動距離行列読み込み成功: shape={self.travel_distance_matrix.shape}")
+        except Exception as e:
+            raise RuntimeError(f"移動距離行列の読み込みエラー: {e}")
+        
+        print("ClosestDistanceStrategy初期化完了")
+        
+    def select_ambulance(self,
+                        request: EmergencyRequest,
+                        available_ambulances: List[AmbulanceInfo],
+                        travel_time_func: callable,
+                        context: DispatchContext) -> Optional[AmbulanceInfo]:
+        """最も近い救急車を選択（移動距離ベース）"""
+        if not available_ambulances:
+            return None
+        
+        # 初期化チェック
+        if self.travel_distance_matrix is None or self.grid_mapping is None:
+            raise RuntimeError("ClosestDistanceStrategy: 初期化が完了していません")
+        
+        min_distance = float('inf')
+        closest_ambulance = None
+        
+        # 事案位置のグリッドインデックスを取得
+        request_grid_idx = self.grid_mapping.get(request.h3_index)
+        if request_grid_idx is None:
+            # グリッドマッピングに存在しない場合は、移動時間ベースのフォールバック
+            print(f"警告: 事案位置 {request.h3_index} がグリッドマッピングに存在しません。移動時間ベースにフォールバック。")
+            for ambulance in available_ambulances:
+                travel_time = travel_time_func(ambulance.current_h3, request.h3_index, 'response')
+                if travel_time < min_distance:
+                    min_distance = travel_time
+                    closest_ambulance = ambulance
+            return closest_ambulance
+        
+        for ambulance in available_ambulances:
+            # 救急車位置のグリッドインデックスを取得
+            amb_grid_idx = self.grid_mapping.get(ambulance.current_h3)
+            
+            if amb_grid_idx is None:
+                # グリッドマッピングに存在しない場合はスキップ
+                continue
+            
+            # 移動距離を取得
+            try:
+                distance = self.travel_distance_matrix[amb_grid_idx, request_grid_idx]
+                
+                if distance < min_distance:
+                    min_distance = distance
+                    closest_ambulance = ambulance
+            except IndexError:
+                # インデックスが範囲外の場合はスキップ
+                continue
+        
+        # 候補が見つからない場合は移動時間ベースのフォールバック
+        if closest_ambulance is None:
+            print("警告: 移動距離ベースで候補が見つかりません。移動時間ベースにフォールバック。")
+            min_time = float('inf')
+            for ambulance in available_ambulances:
+                travel_time = travel_time_func(ambulance.current_h3, request.h3_index, 'response')
+                if travel_time < min_time:
+                    min_time = travel_time
+                    closest_ambulance = ambulance
+                
+        return closest_ambulance
+    
+    def get_travel_distance(self, from_h3: str, to_h3: str) -> Optional[float]:
+        """2点間の移動距離を取得（km）
+        
+        Args:
+            from_h3: 出発地点のH3インデックス
+            to_h3: 到着地点のH3インデックス
+            
+        Returns:
+            移動距離（km）。取得できない場合はNone。
+        """
+        if self.travel_distance_matrix is None or self.grid_mapping is None:
+            return None
+        
+        from_idx = self.grid_mapping.get(from_h3)
+        to_idx = self.grid_mapping.get(to_h3)
+        
+        if from_idx is None or to_idx is None:
+            return None
+        
+        try:
+            return self.travel_distance_matrix[from_idx, to_idx]
+        except IndexError:
+            return None
+
 
 class SeverityBasedStrategy(DispatchStrategy):
     """傷病度考慮型戦略"""
@@ -802,6 +923,10 @@ class PPOStrategy(DispatchStrategy):
         self.severe_conditions = []
         self.mild_conditions = []
         
+        # ★★★ ハイブリッドv2関連 ★★★
+        self.hybrid_v2_enabled = False
+        self.hybrid_v2_config = {}
+        
         # 次元数とデータ
         self.action_dim = None
         self.state_dim = None
@@ -823,12 +948,16 @@ class PPOStrategy(DispatchStrategy):
          # ★★★ Phase 2追加: ID対応表の読み込み ★★★
         self._load_id_mapping()
         
-        # ハイブリッドモード設定
+        # ハイブリッドモード設定（従来版）
         self.hybrid_mode = config.get('hybrid_mode', False)
         if self.hybrid_mode:
             self.severe_conditions = config.get('severe_conditions', ['重症', '重篤', '死亡'])
             self.mild_conditions = config.get('mild_conditions', ['軽症', '中等症'])
             print(f"  ハイブリッドモード有効: 重症系={self.severe_conditions}は直近隊")
+        
+        # ★★★ ハイブリッドv2設定（学習時と同じフィルタリング）★★★
+        # 設定ファイルから読み込む（後でsaved_configから上書き）
+        self.hybrid_v2_enabled = config.get('hybrid_v2', {}).get('enabled', False)
         
         # モデルパスの取得と検証
         model_path = config.get('model_path')
@@ -887,6 +1016,11 @@ class PPOStrategy(DispatchStrategy):
             saved_config = self._create_default_config()
         
         self.config = saved_config
+        
+        # ★★★ ハイブリッドv2設定を更新（saved_configから） ★★★
+        self.hybrid_v2_enabled = saved_config.get('hybrid_v2', {}).get('enabled', False)
+        if self.hybrid_v2_enabled:
+            print(f"  ハイブリッドv2有効: 軽症系にフィルタリング適用")
         
         # 次元数の決定（学習時の設定を優先）
         if 'data' in saved_config:
@@ -1069,7 +1203,7 @@ class PPOStrategy(DispatchStrategy):
         return best_ambulance
     
     def _select_with_ppo(self, request, available_ambulances, travel_time_func, context):
-        """PPOモデルによる選択（学習時と同じ状態エンコーディング）"""
+        """PPOモデルによる選択（学習時と同じ状態エンコーディング + ハイブリッドv2対応）"""
         if self.agent is None or self.state_encoder is None:
             print("警告: PPOエージェント未初期化、フォールバック")
             return self._select_closest(request, available_ambulances, travel_time_func)
@@ -1081,8 +1215,12 @@ class PPOStrategy(DispatchStrategy):
             # 2. StateEncoderで状態ベクトルに変換
             state_vector = self.state_encoder.encode_state(state_dict)
             
-            # 3. 行動マスクの作成
-            action_mask = self._create_action_mask(available_ambulances)
+            # 3. 行動マスクの作成（ハイブリッドv2対応: フィルタリング付き）
+            action_mask = self._create_action_mask(
+                available_ambulances, 
+                request=request, 
+                travel_time_func=travel_time_func
+            )
             
             # 4. PPOエージェントで行動選択
             with torch.no_grad():
@@ -1147,11 +1285,12 @@ class PPOStrategy(DispatchStrategy):
                     }
         
         # 事案情報
+        # ★★★ 学習環境との整合性: priorityは学習時にデフォルト0.5のため、テスト時も0.5を使用 ★★★
         pending_call = {
             'h3_index': request.h3_index,
             'severity': request.severity,
             'wait_time': 0,
-            'priority': request.priority.value if hasattr(request.priority, 'value') else 0.5
+            'priority': 0.5  # 学習環境と同じデフォルト値を使用
         }
         
         # 時間情報
@@ -1165,8 +1304,8 @@ class PPOStrategy(DispatchStrategy):
             'time_of_day': time_of_day
         }
     
-    def _create_action_mask(self, available_ambulances):
-        """利用可能な救急車のマスクを作成（Phase 2修正版）"""
+    def _create_action_mask(self, available_ambulances, request=None, travel_time_func=None):
+        """利用可能な救急車のマスクを作成（Phase 2修正版 + ハイブリッドv2対応）"""
         mask = np.zeros(self.action_dim, dtype=bool)
         
         if not self.id_mapping_loaded:
@@ -1196,7 +1335,78 @@ class PPOStrategy(DispatchStrategy):
         if not mask.any():
             print("警告: マスク内に利用可能な救急車がありません")
         
+        # ★★★ ハイブリッドv2: 軽症系のフィルタリング ★★★
+        if self.hybrid_v2_enabled and request is not None and travel_time_func is not None:
+            # 重症系はフィルタリングなし（直近隊選択は別ルートで処理）
+            from constants import is_severe_condition
+            if not is_severe_condition(request.severity):
+                mask = self._apply_hybrid_v2_filter(mask, available_ambulances, request, travel_time_func)
+        
         return mask
+    
+    def _apply_hybrid_v2_filter(self, base_mask, available_ambulances, request, travel_time_func):
+        """ハイブリッドv2: 軽症系のフィルタリング（学習時と同じロジック）"""
+        filtered_mask = np.zeros(self.action_dim, dtype=bool)
+        
+        # 設定を読み込み
+        hybrid_v2_config = self.config.get('hybrid_v2', {}).get('mild_filtering', {})
+        time_limit = hybrid_v2_config.get('time_limit_seconds', 780)  # 13分 = 780秒
+        use_time_limit = hybrid_v2_config.get('use_time_limit', True)
+        min_candidates = hybrid_v2_config.get('min_candidates', 3)
+        
+        candidates = []
+        
+        for amb_info in available_ambulances:
+            amb_id_str = str(amb_info.id)
+            
+            if amb_id_str not in self.validation_id_to_action:
+                continue
+            
+            action_idx = self.validation_id_to_action[amb_id_str]
+            
+            if not base_mask[action_idx]:
+                continue
+            
+            # 応答時間をチェック
+            response_time = travel_time_func(amb_info.current_h3, request.h3_index, 'response')
+            
+            # 時間制限チェック
+            if use_time_limit and response_time > time_limit:
+                continue
+            
+            candidates.append({
+                'action_idx': action_idx,
+                'response_time': response_time
+            })
+        
+        # フィルタリング後のマスクを作成
+        for c in candidates:
+            filtered_mask[c['action_idx']] = True
+        
+        # 候補がない、または最低候補数に満たない場合は元のマスクを返す
+        if not filtered_mask.any() or filtered_mask.sum() < min_candidates:
+            # 時間でソートして最低候補数を確保
+            all_candidates = []
+            for amb_info in available_ambulances:
+                amb_id_str = str(amb_info.id)
+                if amb_id_str in self.validation_id_to_action:
+                    action_idx = self.validation_id_to_action[amb_id_str]
+                    if base_mask[action_idx]:
+                        response_time = travel_time_func(amb_info.current_h3, request.h3_index, 'response')
+                        all_candidates.append({
+                            'action_idx': action_idx,
+                            'response_time': response_time
+                        })
+            
+            # 応答時間でソート
+            all_candidates.sort(key=lambda x: x['response_time'])
+            
+            # 最低候補数を確保
+            filtered_mask = np.zeros(self.action_dim, dtype=bool)
+            for c in all_candidates[:max(min_candidates, 1)]:
+                filtered_mask[c['action_idx']] = True
+        
+        return filtered_mask
     
     def _map_action_to_ambulance(self, action: int, available_ambulances):
         """選択された行動インデックスを救急車オブジェクトにマッピング（Phase 2修正版）"""
@@ -1581,11 +1791,12 @@ class StrategyFactory:
     
     _strategies = {
         'closest': ClosestAmbulanceStrategy,
+        'closest_distance': ClosestDistanceStrategy,  # 移動距離ベースの最寄り戦略
         'severity_based': SeverityBasedStrategy,
         'advanced_severity': AdvancedSeverityStrategy,
         'ppo_agent': PPOStrategy,
         'second_ride': SecondRideStrategy,
-        'mexclp': MEXCLPStrategy,  # ← MEXCLP戦略を追加
+        'mexclp': MEXCLPStrategy,
     }
     
     @classmethod

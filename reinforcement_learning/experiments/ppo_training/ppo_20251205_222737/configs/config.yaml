@@ -77,7 +77,7 @@ hybrid_mode:
     high_risk_weight: 0.7
     min_acceptable: 0.6
     normal_weight: 0.3
-  enabled: false  # 従来版は無効化（hybrid_v2を使用）
+  enabled: false
   penalties:
     over_warning: -50.0
     per_minute_over: -2.0
@@ -96,33 +96,18 @@ hybrid_mode:
   time_thresholds:
     good: 13
     warning: 20
-
-# ★★★ ハイブリッドモードv2設定 ★★★
-# 重症系は直近隊選択（固定）、軽症系は候補絞り込み後PPOが選択
 hybrid_v2:
   enabled: true
-  
-  # 重症系の処理
-  severe_handling:
-    strategy: "direct_closest"  # 直近隊選択
-    skip_learning: true         # 学習対象外
-  
-  # 軽症系のフィルタリング設定
   mild_filtering:
-    # 時間制限を使用するか
-    use_time_limit: true
-    # 軽症系の時間制限（秒）- 13分 = 780秒
-    time_limit_seconds: 780
-    
-    # カバレッジ損失フィルタリング
-    use_coverage_filter: true
-    coverage_loss_threshold: 0.8  # この値以上のカバレッジ損失は除外
-    
-    # 最低候補数（これより少なくなった場合は緩和）
+    coverage_loss_threshold: 0.8
     min_candidates: 3
-  
-  # デバッグ用
-  verbose: false  # 詳細ログを出力
+    time_limit_seconds: 780
+    use_coverage_filter: true
+    use_time_limit: true
+  severe_handling:
+    skip_learning: true
+    strategy: direct_closest
+  verbose: false
 inherits: ./config.yaml
 network:
   actor:
@@ -191,7 +176,7 @@ reward:
       overloaded_penalty: -5.0
       poor_coverage_penalty: -10.0
       time_penalty_per_minute: -0.3
-    mode: continuous  # ハイブリッドv2ではcontinuous報酬を使用
+    mode: continuous
     simple_params:
       critical_under_6min_bonus: 30.0
       imitation_bonus: 0.0
@@ -220,7 +205,7 @@ reward:
     no_available_ambulance: 0.0
     unhandled_call_penalty: -1.0
 reward_mode:
-  mode: continuous  # ハイブリッドv2では軽症系にcontinuous報酬を使用
+  mode: continuous
 severity:
   categories:
     critical:

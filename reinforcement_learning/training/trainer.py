@@ -17,7 +17,7 @@ import os
 
 # 統一された傷病度定数をインポート
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
-from constants import get_severity_english
+from constants import get_severity_english, is_severe_condition
 
 from ..environment.ems_environment import EMSEnvironment
 from ..agents.ppo_agent import PPOAgent
@@ -73,7 +73,7 @@ class PPOTrainer:
         self.use_tensorboard = config['training']['logging']['tensorboard']
         self.use_wandb = config['training']['logging']['wandb']
         
-        # ハイブリッドモード設定
+        # ハイブリッドモード設定（従来版）
         self.hybrid_mode = config.get('hybrid_mode', {}).get('enabled', False)
         if self.hybrid_mode:
             self.hybrid_stats = {
@@ -82,6 +82,24 @@ class PPOTrainer:
                 'coverage_history': [],
                 'episodes_with_warning': 0  # 20分超過エピソード数
             }
+        
+        # ★★★ ハイブリッドモードv2設定 ★★★
+        self.hybrid_v2_mode = config.get('hybrid_v2', {}).get('enabled', False)
+        if self.hybrid_v2_mode:
+            self.hybrid_v2_stats = {
+                'severe_rt_history': [],           # 重症系（直近隊選択）のRT履歴
+                'mild_rt_history': [],             # 軽症系（PPO学習）のRT履歴
+                'coverage_history': [],            # カバレッジ履歴
+                'filtered_candidates_count': [],   # 絞り込み後の候補数履歴
+                'episodes_with_warning': 0,        # 20分超過エピソード数
+                'severe_cases_total': 0,           # 重症系事案の総数
+                'mild_cases_total': 0              # 軽症系事案の総数
+            }
+            print("=" * 60)
+            print("Trainer: ハイブリッドモードv2が有効化されました")
+            print("  - 重症系: 直近隊選択（学習対象外）")
+            print("  - 軽症系: フィルタリング後PPO選択（学習対象）")
+            print("=" * 60)
         
         # ★★★ wandb初期化の修正 ★★★
         if self.use_wandb:
@@ -180,7 +198,7 @@ class PPOTrainer:
         self._save_training_stats()
         
     def _run_episode(self, training: bool = True, force_teacher: bool = False) -> Tuple[float, int, Dict]:
-        """エピソードを実行（ハイブリッドモード対応版）"""
+        """エピソードを実行（ハイブリッドモードv2対応版）"""
         state = self.env.reset()
         episode_reward = 0.0
         episode_length = 0
@@ -189,11 +207,15 @@ class PPOTrainer:
         episode_stats = {
             'severe_cases': [],
             'mild_cases': [],
-            'coverage_scores': []
+            'coverage_scores': [],
+            'filtered_candidates_count': []  # ハイブリッドv2用
         }
         
         # 教師確率の計算（設定から適切に読み込む）
-        if force_teacher:
+        # ハイブリッドv2モードでは教師機能は無効化（重症系は環境側で直近隊選択）
+        if self.hybrid_v2_mode:
+            teacher_prob = 0.0  # ハイブリッドv2では教師確率を使わない
+        elif force_teacher:
             teacher_prob = 1.0
         elif training and self.config.get('teacher', {}).get('enabled', False):
             teacher_config = self.config['teacher']
@@ -213,36 +235,68 @@ class PPOTrainer:
         while True:
             # 行動選択
             action_mask = self.env.get_action_mask()
-            optimal_action = self.env.get_optimal_action() if teacher_prob > 0 else None
             
-            # 教師あり学習の判定
-            use_teacher = optimal_action is not None and np.random.random() < teacher_prob
-            
-            if training:
-                if use_teacher:
-                    # 教師の行動を使用
-                    action = optimal_action
-                    # PPOエージェントで確率を計算
-                    state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.agent.device)
-                    with torch.no_grad():
-                        action_probs = self.agent.actor(state_tensor)
-                        value = self.agent.critic(state_tensor).item()
-                        log_prob = torch.log(action_probs[0, action]).item()
-                    
-                    # 教師との一致を記録
-                    matched_teacher = True
-                else:
-                    # PPOエージェントの選択
+            # ★★★ ハイブリッドモードv2: 傷病度に応じた行動選択 ★★★
+            if self.hybrid_v2_mode and self.env.pending_call is not None:
+                severity = self.env.pending_call.get('severity', '')
+                
+                if is_severe_condition(severity):
+                    # 重症系: 直近隊選択を環境側で強制（PPOの出力は計算するが使わない）
+                    # 環境のstep()で直近隊選択が強制されるため、ここでは何もしない
+                    # PPOの出力を計算してlog_probとvalueを取得
                     action, log_prob, value = self.agent.select_action(
-                        state, action_mask, deterministic=False
+                        state, action_mask, deterministic=not training
                     )
-                    matched_teacher = (action == optimal_action) if optimal_action is not None else False
-            else:
-                # 評価時
-                action, log_prob, value = self.agent.select_action(
-                    state, action_mask, deterministic=True
-                )
+                    skip_learning = True
+                    dispatch_type = 'hybrid_v2_direct_closest'
+                else:
+                    # 軽症系: フィルタリングされた候補からPPOが選択
+                    # action_maskは既にフィルタリング済み（環境のget_action_mask()で処理）
+                    action, log_prob, value = self.agent.select_action(
+                        state, action_mask, deterministic=not training
+                    )
+                    skip_learning = False
+                    dispatch_type = 'hybrid_v2_ppo_filtered'
+                    
+                    # 絞り込み後の候補数を記録
+                    episode_stats['filtered_candidates_count'].append(action_mask.sum())
+                
                 matched_teacher = False
+            else:
+                # 通常モード（従来のロジック）
+                optimal_action = self.env.get_optimal_action() if teacher_prob > 0 else None
+                
+                # 教師あり学習の判定
+                use_teacher = optimal_action is not None and np.random.random() < teacher_prob
+                
+                if training:
+                    if use_teacher:
+                        # 教師の行動を使用
+                        action = optimal_action
+                        # PPOエージェントで確率を計算
+                        state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.agent.device)
+                        with torch.no_grad():
+                            action_probs = self.agent.actor(state_tensor)
+                            value = self.agent.critic(state_tensor).item()
+                            log_prob = torch.log(action_probs[0, action]).item()
+                        
+                        # 教師との一致を記録
+                        matched_teacher = True
+                    else:
+                        # PPOエージェントの選択
+                        action, log_prob, value = self.agent.select_action(
+                            state, action_mask, deterministic=False
+                        )
+                        matched_teacher = (action == optimal_action) if optimal_action is not None else False
+                else:
+                    # 評価時
+                    action, log_prob, value = self.agent.select_action(
+                        state, action_mask, deterministic=True
+                    )
+                    matched_teacher = False
+                
+                skip_learning = False
+                dispatch_type = None
             
             # 環境ステップ（教師一致情報を渡す）
             self.env.current_matched_teacher = matched_teacher  # 一時的に保存
@@ -252,8 +306,41 @@ class PPOTrainer:
             done = step_result.done
             info = step_result.info
             
-            # ハイブリッドモード：統計収集
-            if self.hybrid_mode:
+            # ★★★ ハイブリッドモードv2: 統計収集 ★★★
+            if self.hybrid_v2_mode:
+                actual_dispatch_type = info.get('dispatch_type', dispatch_type)
+                severity = info.get('severity', '')
+                rt = info.get('dispatch_result', {}).get('response_time', 0)
+                
+                if actual_dispatch_type == 'hybrid_v2_direct_closest':
+                    # 重症系（学習対象外だが統計は記録）
+                    episode_stats['severe_cases'].append({
+                        'severity': severity,
+                        'response_time': rt
+                    })
+                elif actual_dispatch_type == 'hybrid_v2_ppo_filtered':
+                    # 軽症系（学習対象）
+                    episode_stats['mild_cases'].append({
+                        'severity': severity,
+                        'response_time': rt,
+                        'reward': reward
+                    })
+                    
+                    # 20分超過チェック
+                    if rt > 1200:  # 20分 = 1200秒
+                        self.hybrid_v2_stats['episodes_with_warning'] += 1
+                
+                # カバレッジスコア記録
+                if 'coverage_info' in info:
+                    episode_stats['coverage_scores'].append(
+                        info['coverage_info']['overall_coverage']
+                    )
+                
+                # skip_learningフラグの更新（環境からの情報を優先）
+                skip_learning = info.get('skipped_learning', skip_learning)
+            
+            # 従来のハイブリッドモード：統計収集
+            elif self.hybrid_mode:
                 dispatch_type = info.get('dispatch_type', '')
                 severity = info.get('severity', '')
                 rt = info.get('response_time', 0)
@@ -285,8 +372,16 @@ class PPOTrainer:
             episode_reward += reward
             episode_length += 1
             
-            # 経験を保存（軽症系のみ学習対象）
-            if training and not (self.hybrid_mode and info.get('skipped_learning', False)):
+            # ★★★ 経験を保存（重症系は学習対象外）★★★
+            # ハイブリッドv2モード: skip_learning=Trueの場合は保存しない
+            # 従来のハイブリッドモード: info.get('skipped_learning', False)をチェック
+            should_store = training
+            if self.hybrid_v2_mode:
+                should_store = training and not skip_learning
+            elif self.hybrid_mode:
+                should_store = training and not info.get('skipped_learning', False)
+            
+            if should_store:
                 self.agent.store_transition(
                     state=state,
                     action=action,
@@ -304,7 +399,11 @@ class PPOTrainer:
                 break
         
         # エピソード終了後の処理
-        if self.hybrid_mode:
+        # ★★★ ハイブリッドモードv2の統計更新 ★★★
+        if self.hybrid_v2_mode:
+            self._update_hybrid_v2_stats(episode_stats)
+            self._log_hybrid_v2_metrics(episode_stats)
+        elif self.hybrid_mode:
             self._update_hybrid_stats(episode_stats)
             self._log_hybrid_metrics(episode_stats)
         
@@ -652,7 +751,7 @@ class PPOTrainer:
         print("\nこの平均報酬が、PPOエージェントが目指すべき真の目標スコアです。")
 
     def _update_hybrid_stats(self, episode_stats):
-        """ハイブリッドモード統計の更新"""
+        """ハイブリッドモード統計の更新（従来版）"""
         # 重症系RT
         if episode_stats['severe_cases']:
             severe_rts = [case['response_time'] for case in episode_stats['severe_cases']]
@@ -668,6 +767,72 @@ class PPOTrainer:
             self.hybrid_stats['coverage_history'].append(
                 np.mean(episode_stats['coverage_scores'])
             )
+    
+    def _update_hybrid_v2_stats(self, episode_stats):
+        """ハイブリッドモードv2統計の更新"""
+        # 重症系RT（直近隊選択）
+        if episode_stats['severe_cases']:
+            severe_rts = [case['response_time'] for case in episode_stats['severe_cases']]
+            self.hybrid_v2_stats['severe_rt_history'].append(np.mean(severe_rts))
+            self.hybrid_v2_stats['severe_cases_total'] += len(episode_stats['severe_cases'])
+        
+        # 軽症系RT（PPO学習）
+        if episode_stats['mild_cases']:
+            mild_rts = [case['response_time'] for case in episode_stats['mild_cases']]
+            self.hybrid_v2_stats['mild_rt_history'].append(np.mean(mild_rts))
+            self.hybrid_v2_stats['mild_cases_total'] += len(episode_stats['mild_cases'])
+        
+        # カバレッジ
+        if episode_stats['coverage_scores']:
+            self.hybrid_v2_stats['coverage_history'].append(
+                np.mean(episode_stats['coverage_scores'])
+            )
+        
+        # 絞り込み後の候補数
+        if episode_stats['filtered_candidates_count']:
+            self.hybrid_v2_stats['filtered_candidates_count'].extend(
+                episode_stats['filtered_candidates_count']
+            )
+    
+    def _log_hybrid_v2_metrics(self, episode_stats):
+        """ハイブリッドモードv2のメトリクスをログ出力"""
+        if self.use_wandb:
+            metrics = {}
+            
+            # 重症系メトリクス（直近隊選択）
+            if episode_stats['severe_cases']:
+                severe_rts = [case['response_time'] / 60 for case in episode_stats['severe_cases']]
+                metrics['hybrid_v2/severe_rt_mean'] = np.mean(severe_rts)
+                metrics['hybrid_v2/severe_6min_rate'] = sum(1 for rt in severe_rts if rt <= 6) / len(severe_rts) if severe_rts else 0
+                metrics['hybrid_v2/severe_cases_count'] = len(episode_stats['severe_cases'])
+            
+            # 軽症系メトリクス（PPO学習）
+            if episode_stats['mild_cases']:
+                mild_rts = [case['response_time'] / 60 for case in episode_stats['mild_cases']]
+                metrics['hybrid_v2/mild_rt_mean'] = np.mean(mild_rts)
+                metrics['hybrid_v2/mild_13min_rate'] = sum(1 for rt in mild_rts if rt <= 13) / len(mild_rts) if mild_rts else 0
+                metrics['hybrid_v2/mild_20min_over_rate'] = sum(1 for rt in mild_rts if rt > 20) / len(mild_rts) if mild_rts else 0
+                metrics['hybrid_v2/mild_cases_count'] = len(episode_stats['mild_cases'])
+                
+                # 軽症系の報酬
+                mild_rewards = [case.get('reward', 0) for case in episode_stats['mild_cases']]
+                metrics['hybrid_v2/mild_reward_mean'] = np.mean(mild_rewards)
+            
+            # カバレッジメトリクス
+            if episode_stats['coverage_scores']:
+                metrics['hybrid_v2/coverage_mean'] = np.mean(episode_stats['coverage_scores'])
+            
+            # 絞り込み候補数メトリクス
+            if episode_stats['filtered_candidates_count']:
+                metrics['hybrid_v2/filtered_candidates_mean'] = np.mean(episode_stats['filtered_candidates_count'])
+                metrics['hybrid_v2/filtered_candidates_min'] = np.min(episode_stats['filtered_candidates_count'])
+            
+            # 累積統計
+            metrics['hybrid_v2/total_severe_cases'] = self.hybrid_v2_stats['severe_cases_total']
+            metrics['hybrid_v2/total_mild_cases'] = self.hybrid_v2_stats['mild_cases_total']
+            metrics['hybrid_v2/episodes_with_warning'] = self.hybrid_v2_stats['episodes_with_warning']
+            
+            wandb.log(metrics)
 
     def _log_hybrid_metrics(self, episode_stats):
         """ハイブリッドモードのメトリクスをログ出力"""

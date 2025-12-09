@@ -336,9 +336,14 @@ class RewardDesigner:
         elif self.mode == 'discrete':
             reward = self._calculate_discrete_reward(severity, response_time_minutes)
         
-        elif self.mode == 'hybrid' and self.hybrid_enabled:
-            reward = self._calculate_hybrid_reward(severity, response_time_minutes, 
-                                                  coverage_after, additional_info)
+        elif self.mode == 'hybrid':
+            if self.hybrid_enabled:
+                reward = self._calculate_hybrid_reward(severity, response_time_minutes, 
+                                                      coverage_after, additional_info)
+            else:
+                # hybrid_mode.enabled=falseの場合はcontinuousにフォールバック
+                # （hybrid_v2ではcontinuous報酬を使用）
+                reward = self._calculate_continuous_reward(severity, response_time_minutes)
         
         elif self.mode == 'coverage_aware':
             reward = self._calculate_coverage_aware_reward(severity, response_time_minutes, coverage_loss)

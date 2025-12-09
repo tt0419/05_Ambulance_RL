@@ -5,7 +5,7 @@
 # 実験設定
 # ================================================================
 experiment:
-  name: "ppo_continuous_reward_leastweek_v1"
+  name: "ppo_continuous_reward_mostsevereweek_v1"
   seed: 42
   device: "cuda"  # GPUがない場合は "cpu"
 
@@ -22,7 +22,7 @@ data:
     # - start_date: "20231201"
     #   end_date: "20231231"    # 12月（冬季繁忙期）
     - start_date: "20230115"
-      end_date: "20230121"
+      end_date: "20230204"
   
   # 2024年同月で評価（公平な評価）
   eval_periods:
@@ -32,8 +32,8 @@ data:
     #   end_date: "20240807"    # 8月評価（1週間）
     # - start_date: "20241201"
     #   end_date: "20241207"    # 12月評価（1週間）
-    - start_date: "20230122"
-      end_date: "20230128"
+    - start_date: "20230205"
+      end_date: "20230211"
   
   episode_duration_hours: 24  # 1日単位のエピソード
 
@@ -190,8 +190,7 @@ training:
 # 実験管理用の設定（オプション）
 # ================================================================
 metadata:
-  description: "連続報酬で最小件数の週で実験"
-  date: "2025-11-13"
+  description: "連続報酬で重症率が最も高い週で実験"
+  date: "2025-12-06"
   notes: |
     - 訓練環境をｖ11.3にサービス生成時間と病院選択ロジックを追加した形で修正
-    - 学習ができるかどうかに着目
