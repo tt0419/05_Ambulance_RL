@@ -173,27 +173,53 @@ class EMSEnvironment:
         # 教師一致情報の初期化
         self.current_matched_teacher = False
         
-        # 状態・行動空間の次元
-        self.action_dim = len(self.ambulance_data)  # 実際の救急車数
+        # ========== コンパクトモードの設定 ==========
+        state_encoding_config = self.config.get('state_encoding', {})
+        self.compact_mode = state_encoding_config.get('mode', 'full') == 'compact'
+        self.top_k = state_encoding_config.get('top_k', 10)
         
-        # ★★★【修正提案】★★★
-        # StateEncoderの初期化をここで行い、インスタンスをクラス変数として保持する
+        # 移動時間行列の取得
         response_matrix = self.travel_time_matrices.get('response', None)
         if response_matrix is None:
             print("警告: responseフェーズの移動時間行列が見つかりません。")
-
-        # StateEncoderを初期化して、self.state_encoderとして保持
-        from .state_encoder import StateEncoder
-        self.state_encoder = StateEncoder(
-            config=self.config,
-            max_ambulances=self.action_dim,
-            travel_time_matrix=response_matrix,
-            grid_mapping=self.grid_mapping
-        )
         
-        # StateEncoderインスタンスから状態次元を取得する
+        # ========== 状態・行動空間の次元設定 ==========
+        if self.compact_mode:
+            # コンパクトモード: action_dim = top_k, state_dim = 37
+            self.action_dim = self.top_k
+            
+            from .state_encoder import CompactStateEncoder
+            self.state_encoder = CompactStateEncoder(
+                config=self.config,
+                top_k=self.top_k,
+                travel_time_matrix=response_matrix,
+                grid_mapping=self.grid_mapping
+            )
+            
+            # Top-K救急車のIDを保持するリスト（step()で使用）
+            self.current_top_k_ids = []
+            
+            print("=" * 60)
+            print(f"★ コンパクトモード有効: Top-{self.top_k}")
+            print(f"  状態次元: {self.state_encoder.state_dim}")
+            print(f"  行動次元: {self.action_dim}")
+            print("=" * 60)
+        else:
+            # 従来モード: action_dim = 全救急車数, state_dim = 999
+            self.action_dim = len(self.ambulance_data)
+            
+            from .state_encoder import StateEncoder
+            self.state_encoder = StateEncoder(
+                config=self.config,
+                max_ambulances=self.action_dim,
+                travel_time_matrix=response_matrix,
+                grid_mapping=self.grid_mapping
+            )
+            
+            # 従来モードではTop-K IDは使用しない
+            self.current_top_k_ids = None
+        
         self.state_dim = self.state_encoder.state_dim
-        # ★★★【修正ここまで】★★★
         
         print(f"状態空間次元: {self.state_dim}")
         print(f"行動空間次元: {self.action_dim}")
@@ -864,12 +890,14 @@ class EMSEnvironment:
         """救急車の状態を初期化"""
         self.ambulance_states = {}
         
-        print(f"  救急車データから初期化開始: {len(self.ambulance_data)}台のデータ")
+        # 全救急車数（コンパクトモードでもaction_dimではなく実際の救急車数を使用）
+        total_ambulances = len(self.ambulance_data)
+        
+        print(f"  救急車データから初期化開始: {total_ambulances}台のデータ")
         
         # DataFrameのindexではなく、0から始まる連続した番号を使用
+        # 注意: コンパクトモードでもaction_dimではなく全救急車を初期化する
         for amb_id, (_, row) in enumerate(self.ambulance_data.iterrows()):
-            if amb_id >= self.action_dim:
-                break
             
             try:
                 # 座標の検証
@@ -954,17 +982,37 @@ class EMSEnvironment:
     
     def step(self, action: int) -> StepResult:
         """
-        環境のステップ実行（ハイブリッドモードv2対応版）
+        環境のステップ実行（ハイブリッドモードv2対応版、コンパクトモード対応）
         
         Args:
             action: 選択された救急車のインデックス
+                    コンパクトモード時はTop-K内のインデックス（0-9）
+                    従来モード時は救急車ID（0-191）
             
         Returns:
             StepResult: 観測、報酬、終了フラグ、追加情報
         """
         try:
-            # 現在の事案を取得
+            # 現在の事案を取得（コンパクトモード処理より前に定義）
             current_incident = self.pending_call
+            
+            # ========== コンパクトモード: actionをTop-K内インデックスとして解釈 ==========
+            if self.compact_mode:
+                if self.current_top_k_ids and action < len(self.current_top_k_ids):
+                    actual_ambulance_id = self.current_top_k_ids[action]
+                else:
+                    # フォールバック: Top-K IDsがない、または範囲外の場合
+                    if self.current_top_k_ids:
+                        # Top-K IDsがあるが、actionが範囲外 → Top-1を選択
+                        actual_ambulance_id = self.current_top_k_ids[0]
+                    else:
+                        # 利用可能な救急車がない場合 → 従来の直近隊選択ロジックを使用
+                        closest = self._get_closest_ambulance_action(current_incident)
+                        actual_ambulance_id = closest if closest is not None else 0
+                    # 注意: 利用可能な救急車がない場合は警告を出さない（正常なケース）
+            else:
+                # 従来モード: actionがそのまま救急車ID
+                actual_ambulance_id = action
             
             # ★★★ ハイブリッドモードv2: 重症系は直近隊を強制 ★★★
             if self._is_hybrid_v2_enabled() and current_incident:
@@ -973,8 +1021,20 @@ class EMSEnvironment:
                 if is_severe_condition(severity):
                     # 重症系: 直近隊選択を強制（学習対象外）
                     optimal_action = self.get_optimal_action()
-                    if optimal_action is not None:
-                        action = optimal_action
+                    
+                    # コンパクトモードでは、optimal_actionはTop-Kインデックス（0）なので
+                    # 実際の救急車IDに変換する必要がある
+                    if self.compact_mode:
+                        if self.current_top_k_ids and optimal_action is not None and optimal_action < len(self.current_top_k_ids):
+                            severe_ambulance_id = self.current_top_k_ids[optimal_action]
+                        elif self.current_top_k_ids:
+                            severe_ambulance_id = self.current_top_k_ids[0]
+                        else:
+                            # フォールバック: 従来の直近隊選択ロジック
+                            severe_ambulance_id = self._get_closest_ambulance_action(current_incident)
+                    else:
+                        # 従来モード: optimal_actionがそのまま救急車ID
+                        severe_ambulance_id = optimal_action if optimal_action is not None else self._get_closest_ambulance_action(current_incident)
                     
                     self.direct_dispatch_count += 1
                     if hasattr(self, 'hybrid_v2_stats'):
@@ -982,7 +1042,7 @@ class EMSEnvironment:
                     
                     # 直近隊で配車
                     available_before = self._get_available_ambulance_ids()
-                    dispatch_result = self._dispatch_ambulance(action, available_before)
+                    dispatch_result = self._dispatch_ambulance(severe_ambulance_id, available_before)
                     
                     # 報酬は0（学習対象外）
                     reward = 0.0
@@ -1004,9 +1064,9 @@ class EMSEnvironment:
                     if hasattr(self, 'hybrid_v2_stats'):
                         self.hybrid_v2_stats['mild_cases_count'] += 1
                     
-                    # PPOの行動を実行
+                    # PPOの行動を実行（コンパクトモードではactual_ambulance_idを使用）
                     available_before = self._get_available_ambulance_ids()
-                    dispatch_result = self._dispatch_ambulance(action, available_before)
+                    dispatch_result = self._dispatch_ambulance(actual_ambulance_id, available_before)
                     
                     # カバレッジ情報を計算
                     coverage_info = self._calculate_coverage_info()
@@ -1086,9 +1146,9 @@ class EMSEnvironment:
                     # 軽症系：PPOで学習
                     self.ppo_dispatch_count += 1
                     
-                    # PPOの行動を実行
+                    # PPOの行動を実行（コンパクトモードではactual_ambulance_idを使用）
                     available_before = self._get_available_ambulance_ids()
-                    dispatch_result = self._dispatch_ambulance(action, available_before)
+                    dispatch_result = self._dispatch_ambulance(actual_ambulance_id, available_before)
                     
                     # カバレッジ情報を計算
                     coverage_info = self._calculate_coverage_info()
@@ -1114,21 +1174,27 @@ class EMSEnvironment:
                 # デバッグ用: 最適行動との比較を出力
                 if hasattr(self, 'verbose_logging') and self.verbose_logging:
                     optimal_action = self.get_optimal_action()
+                    # コンパクトモードではoptimal_actionはTop-Kインデックス（0）を返す
                     if optimal_action is not None and action != optimal_action:
+                        if self.compact_mode:
+                            # コンパクトモード: actual_ambulance_idを使用して比較
+                            optimal_amb_id = self.current_top_k_ids[0] if self.current_top_k_ids else 0
+                        else:
+                            optimal_amb_id = optimal_action
                         optimal_time = self._calculate_travel_time(
-                            self.ambulance_states[optimal_action]['current_h3'],
+                            self.ambulance_states[optimal_amb_id]['current_h3'],
                             self.pending_call['h3_index']
                         )
                         actual_time = self._calculate_travel_time(
-                            self.ambulance_states[action]['current_h3'],
+                            self.ambulance_states[actual_ambulance_id]['current_h3'],
                             self.pending_call['h3_index']
                         )
-                        print(f"[選択比較] PPO選択: 救急車{action}({actual_time/60:.1f}分) "
-                            f"vs 最適: 救急車{optimal_action}({optimal_time/60:.1f}分)")
+                        print(f"[選択比較] PPO選択: 救急車{actual_ambulance_id}({actual_time/60:.1f}分) "
+                            f"vs 最適: 救急車{optimal_amb_id}({optimal_time/60:.1f}分)")
                 
-                # 行動の実行（救急車の配車）
+                # 行動の実行（救急車の配車）- コンパクトモードではactual_ambulance_idを使用
                 available_before = self._get_available_ambulance_ids()
-                dispatch_result = self._dispatch_ambulance(action, available_before)
+                dispatch_result = self._dispatch_ambulance(actual_ambulance_id, available_before)
                 
                 # 報酬の計算
                 reward = self._calculate_reward(dispatch_result)
@@ -1175,11 +1241,19 @@ class EMSEnvironment:
         ValidationSimulatorのfind_closest_available_ambulanceと同じロジック
         
         Returns:
-            最適な救急車のID、または None
+            コンパクトモード: 常に0（Top-1 = 最短移動時間）
+            従来モード: 最適な救急車のID、または None
         """
         if self.pending_call is None:
             return None
         
+        # ========== コンパクトモード ==========
+        if self.compact_mode:
+            # Top-1（最短移動時間）が最適
+            # action=0 が常に最短移動時間の救急車
+            return 0
+        
+        # ========== 従来モード ==========
         best_action = None
         min_travel_time = float('inf')
         
@@ -2289,6 +2363,13 @@ class EMSEnvironment:
             'time_of_day': self._get_time_of_day()
         }
         
+        # ========== コンパクトモード: Top-K IDを更新 ==========
+        if self.compact_mode:
+            self.current_top_k_ids = self.state_encoder.get_top_k_ambulance_ids(
+                state_dict['ambulances'],
+                state_dict.get('pending_call')
+            )
+        
         # 初期化時に作成したインスタンスをそのまま使用する
         observation = self.state_encoder.encode_state(state_dict)
         
@@ -2363,7 +2444,22 @@ class EMSEnvironment:
         }
     
     def get_action_mask(self) -> np.ndarray:
-        """利用可能な行動のマスクを取得（ハイブリッドv2対応版）"""
+        """利用可能な行動のマスクを取得（ハイブリッドv2対応版、コンパクトモード対応）"""
+        
+        # ========== コンパクトモード ==========
+        if self.compact_mode:
+            # Top-K用のマスク（基本的に全てTrue）
+            mask = np.ones(self.action_dim, dtype=bool)
+            
+            # Top-Kに満たない場合は残りを無効化
+            if self.current_top_k_ids:
+                valid_count = len(self.current_top_k_ids)
+                if valid_count < self.action_dim:
+                    mask[valid_count:] = False
+            
+            return mask
+        
+        # ========== 従来モード ==========
         mask = np.zeros(self.action_dim, dtype=bool)
         
         # 基本マスク：利用可能な救急車

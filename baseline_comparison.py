@@ -50,12 +50,12 @@ from constants import SEVERITY_GROUPS
 # ============================================================
 EXPERIMENT_CONFIG = {
     # 比較する戦略のリスト（ここで戦略を追加・削除）
-    'strategies': ['closest', 
-                  'closest_distance',
-                   'severity_based',
+    'strategies': [#'closest', 
+                  #'closest_distance',
+                   #'severity_based',
                    #'advanced_severity',
                    'ppo_agent',
-                   #'second_ride',
+                #    'second_ride',
                    #'mexclp',
                    ],
     
@@ -101,9 +101,9 @@ EXPERIMENT_CONFIG = {
             'time_limit_seconds': 780
         },
         'ppo_agent': {
-            'model_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251205_222737' / 'checkpoints' / 'best_model.pth'),
-            # config_path: 設定ファイルのパス（オプション、存在しない場合はチェックポイントから読み込む）
-            'config_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251205_222737' / 'configs' / 'config.yaml'),
+            # ★★★ 2024/12/09 コンパクトモード学習済みモデル（37次元状態、Top-10行動）★★★
+            'model_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251217_001830' / 'checkpoints' / 'best_model.pth'),
+            'config_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251217_001830' / 'configs' / 'config.yaml'),
             'hybrid_mode': True,
             'severe_conditions': ['重症', '重篤', '死亡'],
             'mild_conditions': ['軽症', '中等症']
@@ -1168,8 +1168,8 @@ if __name__ == "__main__":
     # ============================================================
     EXPERIMENT_PARAMS = {
         # 期間指定（ランダムサンプリング）
-        'start_date': "20240818",
-        'end_date': "20240824",  # 1ヶ月間
+        'start_date': "20240204",
+        'end_date': "20240511",  # 1ヶ月間
         
         # エピソード設定
         'episode_duration_hours': 24,  # 24時間エピソード

@@ -48,7 +48,7 @@ if module_path not in sys.path:
 
 try:
     from reinforcement_learning.agents.ppo_agent import PPOAgent
-    from reinforcement_learning.environment.state_encoder import StateEncoder
+    from reinforcement_learning.environment.state_encoder import StateEncoder, CompactStateEncoder, create_state_encoder
     PPO_AVAILABLE = True
 except ImportError as e:
     print(f"警告: PPOモジュールのインポートに失敗しました: {e}")
@@ -909,7 +909,7 @@ class SecondRideStrategy(DispatchStrategy):
 
 # PPOエージェントを戦略として使用する新しいクラス（改良版）
 class PPOStrategy(DispatchStrategy):
-    """学習済みPPOエージェントを使用する戦略（Phase 2修正版）"""
+    """学習済みPPOエージェントを使用する戦略（Phase 2修正版 + コンパクトモード対応）"""
     
     def __init__(self):
         super().__init__("ppo_agent", "reinforcement_learning")
@@ -926,6 +926,11 @@ class PPOStrategy(DispatchStrategy):
         # ★★★ ハイブリッドv2関連 ★★★
         self.hybrid_v2_enabled = False
         self.hybrid_v2_config = {}
+        
+        # ★★★ コンパクトモード関連 ★★★
+        self.compact_mode = False
+        self.top_k = 10
+        self.current_top_k_ambulances = []  # Top-K救急車のリスト（評価時に更新）
         
         # 次元数とデータ
         self.action_dim = None
@@ -1022,18 +1027,29 @@ class PPOStrategy(DispatchStrategy):
         if self.hybrid_v2_enabled:
             print(f"  ハイブリッドv2有効: 軽症系にフィルタリング適用")
         
-        # 次元数の決定（学習時の設定を優先）
-        if 'data' in saved_config:
-            area_config = saved_config['data'].get('area_restriction', {})
-            if area_config.get('enabled'):
-                self.action_dim = area_config.get('num_ambulances_in_area', 192)
-                self.state_dim = area_config.get('state_dim', None)
-            else:
-                self.action_dim = saved_config.get('state_prediction', {}).get('action_dim', 192)
-                self.state_dim = saved_config.get('state_prediction', {}).get('state_dim', None)
+        # ★★★ コンパクトモード設定を読み込み ★★★
+        state_encoding_config = saved_config.get('state_encoding', {})
+        self.compact_mode = state_encoding_config.get('mode', 'full') == 'compact'
+        self.top_k = state_encoding_config.get('top_k', 10)
+        
+        if self.compact_mode:
+            print(f"  コンパクトモード有効: Top-{self.top_k}選択")
+            self.action_dim = self.top_k
+            # state_dim = severity_features(2) + (top_k × features_per_ambulance(3)) + global_features(5)
+            self.state_dim = 2 + (self.top_k * 3) + 5
         else:
-            self.action_dim = 192
-            self.state_dim = None
+            # 次元数の決定（従来モード：学習時の設定を優先）
+            if 'data' in saved_config:
+                area_config = saved_config['data'].get('area_restriction', {})
+                if area_config.get('enabled'):
+                    self.action_dim = area_config.get('num_ambulances_in_area', 192)
+                    self.state_dim = area_config.get('state_dim', None)
+                else:
+                    self.action_dim = saved_config.get('state_prediction', {}).get('action_dim', 192)
+                    self.state_dim = saved_config.get('state_prediction', {}).get('state_dim', None)
+            else:
+                self.action_dim = 192
+                self.state_dim = None
         
         print(f"  行動次元: {self.action_dim}")
         
@@ -1071,13 +1087,24 @@ class PPOStrategy(DispatchStrategy):
             print(f"  警告: グリッドマッピングが見つかりません: {grid_mapping_path}")
             self.grid_mapping = None
         
-        # StateEncoderの初期化
-        self.state_encoder = StateEncoder(
-            config=saved_config,
-            max_ambulances=self.action_dim,
-            travel_time_matrix=self.travel_time_matrix,
-            grid_mapping=self.grid_mapping
-        )
+        # StateEncoderの初期化（コンパクトモード対応）
+        if self.compact_mode:
+            # コンパクトモード: CompactStateEncoderを使用
+            self.state_encoder = CompactStateEncoder(
+                config=saved_config,
+                top_k=self.top_k,  # 学習時と同じtop_kを使用
+                travel_time_matrix=self.travel_time_matrix,
+                grid_mapping=self.grid_mapping
+            )
+            print(f"  CompactStateEncoderを使用 (Top-{self.top_k})")
+        else:
+            # 従来モード: StateEncoderを使用
+            self.state_encoder = StateEncoder(
+                config=saved_config,
+                max_ambulances=self.action_dim,
+                travel_time_matrix=self.travel_time_matrix,
+                grid_mapping=self.grid_mapping
+            )
         
         # 状態次元数の決定
         if self.state_dim is None:
@@ -1203,24 +1230,39 @@ class PPOStrategy(DispatchStrategy):
         return best_ambulance
     
     def _select_with_ppo(self, request, available_ambulances, travel_time_func, context):
-        """PPOモデルによる選択（学習時と同じ状態エンコーディング + ハイブリッドv2対応）"""
+        """PPOモデルによる選択（学習時と同じ状態エンコーディング + ハイブリッドv2対応 + コンパクトモード対応）"""
         if self.agent is None or self.state_encoder is None:
             print("警告: PPOエージェント未初期化、フォールバック")
             return self._select_closest(request, available_ambulances, travel_time_func)
         
         try:
+            # ★★★ コンパクトモード: Top-K救急車リストを先に取得 ★★★
+            if self.compact_mode:
+                self.current_top_k_ambulances = self._get_top_k_ambulances(
+                    request, available_ambulances, travel_time_func
+                )
+                
+                if not self.current_top_k_ambulances:
+                    print("警告: Top-K救急車が見つかりません、フォールバック")
+                    return self._select_closest(request, available_ambulances, travel_time_func)
+            
             # 1. ValidationSimulatorの状態を学習環境形式に変換
             state_dict = self._build_state_dict(request, available_ambulances, context)
             
             # 2. StateEncoderで状態ベクトルに変換
             state_vector = self.state_encoder.encode_state(state_dict)
             
-            # 3. 行動マスクの作成（ハイブリッドv2対応: フィルタリング付き）
-            action_mask = self._create_action_mask(
-                available_ambulances, 
-                request=request, 
-                travel_time_func=travel_time_func
-            )
+            # 3. 行動マスクの作成（コンパクトモード対応）
+            if self.compact_mode:
+                # コンパクトモード: Top-K用のマスク
+                action_mask = self._create_compact_action_mask()
+            else:
+                # 従来モード: ハイブリッドv2対応フィルタリング付き
+                action_mask = self._create_action_mask(
+                    available_ambulances, 
+                    request=request, 
+                    travel_time_func=travel_time_func
+                )
             
             # 4. PPOエージェントで行動選択
             with torch.no_grad():
@@ -1231,7 +1273,12 @@ class PPOStrategy(DispatchStrategy):
                 )
             
             # 5. 選択された行動を救急車にマッピング
-            selected_amb = self._map_action_to_ambulance(action, available_ambulances)
+            if self.compact_mode:
+                # コンパクトモード: actionはTop-Kインデックス（0-9）
+                selected_amb = self._map_compact_action_to_ambulance(action)
+            else:
+                # 従来モード: actionは救急車ID（0-191）
+                selected_amb = self._map_action_to_ambulance(action, available_ambulances)
             
             if selected_amb:
                 return selected_amb
@@ -1244,6 +1291,39 @@ class PPOStrategy(DispatchStrategy):
             import traceback
             traceback.print_exc()
             return self._select_closest(request, available_ambulances, travel_time_func)
+    
+    def _get_top_k_ambulances(self, request, available_ambulances, travel_time_func):
+        """Top-K救急車を取得（移動時間順）"""
+        # 各救急車の移動時間を計算
+        ambulance_times = []
+        for amb_info in available_ambulances:
+            travel_time = travel_time_func(amb_info.current_h3, request.h3_index, 'response')
+            ambulance_times.append((amb_info, travel_time))
+        
+        # 移動時間でソート
+        ambulance_times.sort(key=lambda x: x[1])
+        
+        # Top-Kを返す
+        return [amb_info for amb_info, _ in ambulance_times[:self.top_k]]
+    
+    def _create_compact_action_mask(self):
+        """コンパクトモード用の行動マスクを作成"""
+        mask = np.zeros(self.action_dim, dtype=bool)
+        
+        # 現在のTop-K救急車の数だけTrueに設定
+        valid_count = len(self.current_top_k_ambulances)
+        mask[:valid_count] = True
+        
+        return mask
+    
+    def _map_compact_action_to_ambulance(self, action: int):
+        """コンパクトモード: actionをTop-K救急車にマッピング"""
+        if 0 <= action < len(self.current_top_k_ambulances):
+            return self.current_top_k_ambulances[action]
+        elif self.current_top_k_ambulances:
+            # 範囲外の場合はTop-1を返す
+            return self.current_top_k_ambulances[0]
+        return None
     
     def _build_state_dict(self, request, available_ambulances, context):
         """ValidationSimulatorの状態を学習環境形式に変換（Phase 2修正版）"""
@@ -1297,12 +1377,33 @@ class PPOStrategy(DispatchStrategy):
         episode_step = int(context.current_time / 60) if context.current_time else 0
         time_of_day = context.hour_of_day if context.hour_of_day is not None else 12
         
-        return {
+        state_dict = {
             'ambulances': ambulances,
             'pending_call': pending_call,
             'episode_step': episode_step,
             'time_of_day': time_of_day
         }
+        
+        # ★★★ コンパクトモード: Top-K救急車リストを追加 ★★★
+        if self.compact_mode and self.current_top_k_ambulances:
+            # Top-K救急車の情報をstate_dictに追加
+            top_k_info = []
+            for amb_info in self.current_top_k_ambulances:
+                amb_id_str = str(amb_info.id)
+                # 救急車IDを取得（存在する場合）
+                if amb_id_str in self.validation_id_to_action:
+                    action_idx = self.validation_id_to_action[amb_id_str]
+                else:
+                    action_idx = -1
+                
+                top_k_info.append({
+                    'id': action_idx,
+                    'current_h3': amb_info.current_h3,
+                    'station_h3': amb_info.station_h3
+                })
+            state_dict['top_k_ambulances'] = top_k_info
+        
+        return state_dict
     
     def _create_action_mask(self, available_ambulances, request=None, travel_time_func=None):
         """利用可能な救急車のマスクを作成（Phase 2修正版 + ハイブリッドv2対応）"""

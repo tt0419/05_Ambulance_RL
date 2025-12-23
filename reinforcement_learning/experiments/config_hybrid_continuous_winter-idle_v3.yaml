@@ -81,7 +81,7 @@ data:
 # PPOハイパーパラメータ (軽症系学習に最適化)
 # -------------------------------------------------------------------
 ppo:
-  n_episodes: 1000
+  n_episodes: 3000
   batch_size: 1024
   
   # 学習率
@@ -147,20 +147,20 @@ reward:
     # ===================================================================
     hybrid_params:
       # 応答時間関連パラメータ
-      time_penalty_per_minute: -0.3       # 1分あたりの時間ペナルティ
-      mild_under_13min_bonus: 10.0         # 軽症13分以内達成ボーナス
-      moderate_under_13min_bonus: 30.0   # 中等症13分以内達成ボーナス
-      over_13min_penalty: -15.0            # 13分超過時のペナルティ
-      over_20min_penalty: -50.0           # 20分超過時の追加ペナルティ
+      time_penalty_per_minute: -3.0       # 1分あたりの時間ペナルティ
+      mild_under_13min_bonus: 100.0         # 軽症13分以内達成ボーナス
+      moderate_under_13min_bonus: 300.0   # 中等症13分以内達成ボーナス
+      over_13min_penalty: -150.0            # 13分超過時のペナルティ
+      over_20min_penalty: -500.0           # 20分超過時の追加ペナルティ
       
       # カバレッジ関連ボーナス/ペナルティ
-      good_coverage_bonus: 10.0           # カバレッジ0.8以上
-      coverage_maintenance_bonus: 5.0     # カバレッジ0.6-0.8
-      poor_coverage_penalty: -10.0        # カバレッジ0.6未満
+      good_coverage_bonus: 100.0           # カバレッジ0.8以上
+      coverage_maintenance_bonus: 50.0     # カバレッジ0.6-0.8
+      poor_coverage_penalty: -100.0        # カバレッジ0.6未満
       
       # 負荷バランス関連
-      balanced_workload_bonus: 2.0        # 均等な負荷分散（平均5件未満/救急車）
-      overloaded_penalty: -5.0            # 特定救急車の過負荷（平均10件超過/救急車）
+      balanced_workload_bonus: 20.0        # 均等な負荷分散（平均5件未満/救急車）
+      overloaded_penalty: -50.0            # 特定救急車の過負荷（平均10件超過/救急車）
   
   # カバレッジパラメータ（重症系への準備度評価用）
   coverage_params:
