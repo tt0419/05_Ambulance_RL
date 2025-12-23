@@ -40,7 +40,7 @@ if str(fix_dir) not in sys.path:
     sys.path.append(str(fix_dir))
 
 # ディスパッチ戦略のインポート
-from dispatch_strategies import STRATEGY_CONFIGS
+from dispatch_strategies import STRATEGY_CONFIGS, StrategyFactory, PPOStrategy
 
 # 統一された傷病度定数をインポート
 from constants import SEVERITY_GROUPS
@@ -50,14 +50,21 @@ from constants import SEVERITY_GROUPS
 # ============================================================
 EXPERIMENT_CONFIG = {
     # 比較する戦略のリスト（ここで戦略を追加・削除）
-    'strategies': [#'closest', 
-                  #'closest_distance',
-                   #'severity_based',
-                   #'advanced_severity',
-                   'ppo_agent',
-                #    'second_ride',
-                   #'mexclp',
-                   ],
+    # モデル名を固定せず、PPO用のスロットを残し、パスだけ差し替えて使えるようにする
+    # 既存の戦略も残しておく（比較材料）
+    'strategies': [
+        'closest',
+        # 'closest_distance',
+        # 'severity_based',
+        # 'advanced_severity',
+        # 'second_ride',
+        # 'mexclp',
+        'ppo_agent',   # 従来PPO（ベースライン）
+        'ppo_slot1',   # スロット1（パスを差し替えて利用）
+        'ppo_slot2',   # スロット2
+        'ppo_slot3',   # スロット3
+        # 'ppo_slot4', # スロット4（必要ならコメント解除）
+    ],
     
     # 各戦略の日本語表示名
     'strategy_labels': {
@@ -66,8 +73,13 @@ EXPERIMENT_CONFIG = {
         'severity_based': '傷病度考慮運用',
         'advanced_severity': '高度傷病度考慮運用',
         'second_ride': '2番目選択運用',  
-        'ppo_agent': 'PPOエージェント運用' ,
-        'mexclp': 'MEXCLP運用'
+        'ppo_agent': 'PPOエージェント（ベースライン）',
+        'mexclp': 'MEXCLP運用',
+        # ↓ PPOスロット用の表示名
+        'ppo_slot1': 'PPOエージェント（スロット1）',
+        'ppo_slot2': 'PPOエージェント（スロット2）',
+        'ppo_slot3': 'PPOエージェント（スロット3）',
+        'ppo_slot4': 'PPOエージェント（スロット4）',
     },
     
     # 各戦略の色設定
@@ -77,8 +89,13 @@ EXPERIMENT_CONFIG = {
         'severity_based': '#e74c3c',    # 赤
         'advanced_severity': '#2ecc71', # 緑
         'second_ride': '#f39c12',       # オレンジ 
-        'ppo_agent': '#9b59b6',         # 紫 
-        'mexclp': '#e67e22'             # カロット
+        'ppo_agent': '#9b59b6',         # 紫（従来PPO）
+        'mexclp': '#e67e22',            # カロット
+        # ↓ PPOスロット用の色
+        'ppo_slot1': '#9b59b6',  # 紫
+        'ppo_slot2': '#e91e63',  # ピンク
+        'ppo_slot3': '#00bcd4',  # シアン
+        'ppo_slot4': '#8e44ad',  # 予備色
     },
     
     # 各戦略の設定
@@ -100,20 +117,125 @@ EXPERIMENT_CONFIG = {
             'enable_time_limit': False,
             'time_limit_seconds': 780
         },
+        # 従来の単一PPO設定は残しておく（必要なら別実験で使用可能）
         'ppo_agent': {
-            # ★★★ 2024/12/09 コンパクトモード学習済みモデル（37次元状態、Top-10行動）★★★
             'model_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251217_001830' / 'checkpoints' / 'best_model.pth'),
             'config_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251217_001830' / 'configs' / 'config.yaml'),
             'hybrid_mode': True,
             'severe_conditions': ['重症', '重篤', '死亡'],
-            'mild_conditions': ['軽症', '中等症']
+            'mild_conditions': ['軽症', '中等症'],
         },
+        # ★★★ 以下、PPOスロット用の設定（パスを差し替えて利用）★★★
+        'ppo_slot1': {
+            'model_path': str(
+                fix_dir
+                / 'reinforcement_learning'
+                / 'experiments'
+                / 'ppo_training'
+                / 'ppo_20251210_212341'  # ←ここを差し替えてください
+                / 'checkpoints'
+                / 'best_model.pth'
+            ),
+            'config_path': str(
+                fix_dir
+                / 'reinforcement_learning'
+                / 'experiments'
+                / 'ppo_training'
+                / 'ppo_20251210_212341'  # ←ここを差し替えてください
+                / 'configs'
+                / 'config.yaml'
+            ),
+            'hybrid_mode': True,
+            'severe_conditions': ['重症', '重篤', '死亡'],
+            'mild_conditions': ['軽症', '中等症'],
+        },
+        'ppo_slot2': {
+            'model_path': str(
+                fix_dir
+                / 'reinforcement_learning'
+                / 'experiments'
+                / 'ppo_training'
+                / 'ppo_20251216_143056'  # ←ここを差し替えてください
+                / 'checkpoints'
+                / 'best_model.pth'
+            ),
+            'config_path': str(
+                fix_dir
+                / 'reinforcement_learning'
+                / 'experiments'
+                / 'ppo_training'
+                / 'ppo_20251216_143056'  # ←ここを差し替えてください
+                / 'configs'
+                / 'config.yaml'
+            ),
+            'hybrid_mode': True,
+            'severe_conditions': ['重症', '重篤', '死亡'],
+            'mild_conditions': ['軽症', '中等症'],
+        },
+        'ppo_slot3': {
+            'model_path': str(
+                fix_dir
+                / 'reinforcement_learning'
+                / 'experiments'
+                / 'ppo_training'
+                / 'ppo_20251202_161021'  # ←ここを差し替えてください
+                / 'checkpoints'
+                / 'best_model.pth'
+            ),
+            'config_path': str(
+                fix_dir
+                / 'reinforcement_learning'
+                / 'experiments'
+                / 'ppo_training'
+                / 'ppo_20251202_161021'  # ←ここを差し替えてください
+                / 'configs'
+                / 'config.yaml'
+            ),
+            'hybrid_mode': True,
+            'severe_conditions': ['重症', '重篤', '死亡'],
+            'mild_conditions': ['軽症', '中等症'],
+        },
+        # 4本目用の予備設定（パスは仮置き、必要時にコメント解除）
+        # 'ppo_slot4': {
+        #     'model_path': str(
+        #         fix_dir
+        #         / 'reinforcement_learning'
+        #         / 'experiments'
+        #         / 'ppo_training'
+        #         / 'ppo_slot4'  # ←ここを差し替えてください
+        #         / 'checkpoints'
+        #         / 'best_model.pth'
+        #     ),
+        #     'config_path': str(
+        #         fix_dir
+        #         / 'reinforcement_learning'
+        #         / 'experiments'
+        #         / 'ppo_training'
+        #         / 'ppo_slot4'  # ←ここを差し替えてください
+        #         / 'configs'
+        #         / 'config.yaml'
+        #     ),
+        #     'hybrid_mode': True,
+        #     'severe_conditions': ['重症', '重篤', '死亡'],
+        #     'mild_conditions': ['軽症', '中等症'],
+        # },
         'mexclp': {
             'busy_fraction': 0.3,
             'time_threshold_seconds': 780 # 13分
         }
         }
     }
+
+
+def register_ppo_slots():
+    """
+    EXPERIMENT_CONFIGで指定されたPPOスロット名をStrategyFactoryに登録する。
+    名称を固定しておけば、model_pathだけ差し替えて複数モデルを比較可能。
+    """
+    for name in EXPERIMENT_CONFIG['strategies']:
+        if name.startswith('ppo_') and name not in StrategyFactory.list_available_strategies():
+            StrategyFactory.register_strategy(name, PPOStrategy)
+
 
 def flatten_dict(d, parent_key='', sep='.'):
     """ネストした辞書をフラットな辞書に変換する（wandb用）"""
@@ -175,9 +297,14 @@ def run_comparison_experiment(
         wandb_project: wandbのプロジェクト名
         experiment_name: カスタム実験名（オプション）
     """
+    # PPOスロット名を事前登録（Unknown strategy エラー防止）
+    register_ppo_slots()
+
     # output_base_dirがNoneの場合は絶対パスを設定
+    # 従来: プロジェクト直下の data/tokyo/experiments
+    # 今回: 修正版ディレクトリ配下の data/tokyo/experiments に分離
     if output_base_dir is None:
-        output_base_dir = str(PROJECT_ROOT / "data" / "tokyo" / "experiments")
+        output_base_dir = str(fix_dir / "data" / "tokyo" / "experiments")
     
     # 実験ディレクトリの作成
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -260,7 +387,9 @@ def run_comparison_experiment(
         os.makedirs(strategy_batch_dir, exist_ok=True)
         
         # 軽量モード判定
-        is_lightweight_mode = num_runs >= 10
+        # 比較実験では各runごとの詳細可視化は不要で、集約結果のみを使うため、
+        # 常に軽量モード（run番号付きJSON + 可視化スキップ）とする。
+        is_lightweight_mode = True
         if is_lightweight_mode:
             print(f"  軽量モード: 個別グラフ生成をスキップします")
         
@@ -1175,7 +1304,7 @@ if __name__ == "__main__":
         'episode_duration_hours': 24,  # 24時間エピソード
         
         # 実行回数（ランダムサンプリング）
-        'num_runs': 100,  # 各戦略100回ずつ実行
+        'num_runs': 5,  # 各戦略100回ずつ実行
         
         # 出力設定
         'output_base_dir': None,  # 自動的に絶対パスが設定されます

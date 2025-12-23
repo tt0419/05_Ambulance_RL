@@ -1909,7 +1909,11 @@ class StrategyFactory:
         strategy = cls._strategies[strategy_name]()
         
         # PPO戦略の場合は特別な初期化処理
-        if strategy_name == 'ppo_agent':
+        # 名前に依存せず、クラス型で判定することで
+        # 'ppo_agent', 'ppo_20251210_212341' など複数PPO戦略に対応
+        from typing import cast
+        if isinstance(strategy, PPOStrategy):
+            strategy = cast(PPOStrategy, strategy)
             if not config:
                 raise ValueError("PPO戦略には 'model_path' と 'config_path' を含む設定が必要です。")
             strategy.initialize(config)
