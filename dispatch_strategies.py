@@ -109,6 +109,17 @@ class DispatchStrategy(ABC):
         self.strategy_type = strategy_type
         self.metrics = {}
         self.config = {}
+        # ★★★ 直近隊選択統計の初期化 ★★★
+        self.dispatch_stats = {
+            'total_dispatches': 0,
+            'closest_dispatches': 0,
+            'non_closest_dispatches': 0,
+            'by_severity': {
+                'severe': {'total': 0, 'closest': 0, 'non_closest': 0},
+                'mild': {'total': 0, 'closest': 0, 'non_closest': 0},
+                'other': {'total': 0, 'closest': 0, 'non_closest': 0}
+            }
+        }
         
     @abstractmethod
     def select_ambulance(self, 
@@ -138,6 +149,76 @@ class DispatchStrategy(ABC):
             '軽症': DispatchPriority.LOW
         }
         return severity_map.get(severity, DispatchPriority.LOW)
+    
+    def _record_dispatch_statistics(self, 
+                                   selected_ambulance: Optional[AmbulanceInfo],
+                                   request: EmergencyRequest,
+                                   available_ambulances: List[AmbulanceInfo],
+                                   travel_time_func: callable):
+        """直近隊選択統計を記録"""
+        if not selected_ambulance or not available_ambulances:
+            return
+        
+        # 利用可能な救急車の中で最も近い救急車を特定
+        min_time = float('inf')
+        closest_ambulance = None
+        for ambulance in available_ambulances:
+            travel_time = travel_time_func(ambulance.current_h3, request.h3_index, 'response')
+            if travel_time < min_time:
+                min_time = travel_time
+                closest_ambulance = ambulance
+        
+        # 選択された救急車が直近隊かどうかを判定（1秒の許容誤差）
+        is_closest = False
+        if closest_ambulance:
+            selected_time = travel_time_func(selected_ambulance.current_h3, request.h3_index, 'response')
+            is_closest = abs(selected_time - min_time) <= 1.0  # 1秒以内の差は直近隊とみなす
+        
+        # 統計を更新
+        self.dispatch_stats['total_dispatches'] += 1
+        if is_closest:
+            self.dispatch_stats['closest_dispatches'] += 1
+        else:
+            self.dispatch_stats['non_closest_dispatches'] += 1
+        
+        # 傷病度別統計
+        severity = request.severity if hasattr(request, 'severity') else 'other'
+        severity_category = 'other'
+        if severity in ['重症', '重篤', '死亡']:
+            severity_category = 'severe'
+        elif severity in ['軽症', '中等症']:
+            severity_category = 'mild'
+        
+        self.dispatch_stats['by_severity'][severity_category]['total'] += 1
+        if is_closest:
+            self.dispatch_stats['by_severity'][severity_category]['closest'] += 1
+        else:
+            self.dispatch_stats['by_severity'][severity_category]['non_closest'] += 1
+    
+    def get_dispatch_statistics(self) -> Dict:
+        """直近隊選択統計を取得"""
+        import copy
+        stats = copy.deepcopy(self.dispatch_stats)
+        
+        # 全体の直近隊選択率を計算
+        if stats['total_dispatches'] > 0:
+            stats['closest_rate'] = stats['closest_dispatches'] / stats['total_dispatches']
+            stats['non_closest_rate'] = stats['non_closest_dispatches'] / stats['total_dispatches']
+        else:
+            stats['closest_rate'] = 0.0
+            stats['non_closest_rate'] = 0.0
+        
+        # 傷病度別の直近隊選択率を計算
+        for category in ['severe', 'mild', 'other']:
+            cat_data = stats['by_severity'][category]
+            if cat_data['total'] > 0:
+                cat_data['closest_rate'] = cat_data['closest'] / cat_data['total']
+                cat_data['non_closest_rate'] = cat_data['non_closest'] / cat_data['total']
+            else:
+                cat_data['closest_rate'] = 0.0
+                cat_data['non_closest_rate'] = 0.0
+        
+        return stats
 
 class ClosestAmbulanceStrategy(DispatchStrategy):
     """最寄り救急車戦略（現行）- 移動時間ベース"""
@@ -1893,6 +1974,7 @@ class StrategyFactory:
     _strategies = {
         'closest': ClosestAmbulanceStrategy,
         'closest_distance': ClosestDistanceStrategy,  # 移動距離ベースの最寄り戦略
+        'closest_haversine': ClosestDistanceStrategy,  # ハバーシン距離ベースの最寄り戦略（closest_distanceと同じ実装）
         'severity_based': SeverityBasedStrategy,
         'advanced_severity': AdvancedSeverityStrategy,
         'ppo_agent': PPOStrategy,

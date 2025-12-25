@@ -52,23 +52,26 @@ EXPERIMENT_CONFIG = {
     # 比較する戦略のリスト（ここで戦略を追加・削除）
     # モデル名を固定せず、PPO用のスロットを残し、パスだけ差し替えて使えるようにする
     # 既存の戦略も残しておく（比較材料）
+    # 追加: ハバーシン距離ベースの直近隊（closest_haversine）
     'strategies': [
-        'closest',
+        # 'closest',
+        # 'closest_haversine',
         # 'closest_distance',
         # 'severity_based',
         # 'advanced_severity',
-        # 'second_ride',
+        'second_ride',
         # 'mexclp',
-        'ppo_agent',   # 従来PPO（ベースライン）
-        'ppo_slot1',   # スロット1（パスを差し替えて利用）
-        'ppo_slot2',   # スロット2
-        'ppo_slot3',   # スロット3
-        # 'ppo_slot4', # スロット4（必要ならコメント解除）
+        # 'ppo_agent',   # 従来PPO（ベースライン）
+        # 'ppo_slot1',   # スロット1（パスを差し替えて利用）
+        # 'ppo_slot2',   # スロット2
+        # 'ppo_slot3',   # スロット3
+        'ppo_slot4', # スロット4（必要ならコメント解除）
     ],
     
     # 各戦略の日本語表示名
     'strategy_labels': {
         'closest': '直近隊運用（時間）',
+        'closest_haversine': '直近隊運用（ハバーシン距離）',
         'closest_distance': '直近隊運用（距離）',
         'severity_based': '傷病度考慮運用',
         'advanced_severity': '高度傷病度考慮運用',
@@ -85,6 +88,7 @@ EXPERIMENT_CONFIG = {
     # 各戦略の色設定
     'strategy_colors': {
         'closest': '#3498db',           # 青
+        'closest_haversine': '#2980b9', # 濃い青
         'closest_distance': '#1abc9c',  # ティール（青緑）
         'severity_based': '#e74c3c',    # 赤
         'advanced_severity': '#2ecc71', # 緑
@@ -101,6 +105,7 @@ EXPERIMENT_CONFIG = {
     # 各戦略の設定
     'strategy_configs': {
         'closest': {},
+        'closest_haversine': {},  # ハバーシン距離ベースの最寄り戦略
         'closest_distance': {},  # 移動距離ベースの最寄り戦略（初期化時に行列を読み込む）
         'severity_based': {
             'coverage_radius_km': 5.0,
@@ -119,9 +124,9 @@ EXPERIMENT_CONFIG = {
         },
         # 従来の単一PPO設定は残しておく（必要なら別実験で使用可能）
         'ppo_agent': {
-            'model_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251217_001830' / 'checkpoints' / 'best_model.pth'),
-            'config_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251217_001830' / 'configs' / 'config.yaml'),
-            'hybrid_mode': True,
+            'model_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251123_071714' / 'checkpoints' / 'best_model.pth'),
+            'config_path': str(fix_dir / 'reinforcement_learning' / 'experiments' / 'ppo_training' / 'ppo_20251123_071714' / 'configs' / 'config.yaml'),
+            'hybrid_mode': False,
             'severe_conditions': ['重症', '重篤', '死亡'],
             'mild_conditions': ['軽症', '中等症'],
         },
@@ -196,29 +201,29 @@ EXPERIMENT_CONFIG = {
             'mild_conditions': ['軽症', '中等症'],
         },
         # 4本目用の予備設定（パスは仮置き、必要時にコメント解除）
-        # 'ppo_slot4': {
-        #     'model_path': str(
-        #         fix_dir
-        #         / 'reinforcement_learning'
-        #         / 'experiments'
-        #         / 'ppo_training'
-        #         / 'ppo_slot4'  # ←ここを差し替えてください
-        #         / 'checkpoints'
-        #         / 'best_model.pth'
-        #     ),
-        #     'config_path': str(
-        #         fix_dir
-        #         / 'reinforcement_learning'
-        #         / 'experiments'
-        #         / 'ppo_training'
-        #         / 'ppo_slot4'  # ←ここを差し替えてください
-        #         / 'configs'
-        #         / 'config.yaml'
-        #     ),
-        #     'hybrid_mode': True,
-        #     'severe_conditions': ['重症', '重篤', '死亡'],
-        #     'mild_conditions': ['軽症', '中等症'],
-        # },
+        'ppo_slot4': {
+            'model_path': str(
+                fix_dir
+                / 'reinforcement_learning'
+                / 'experiments'
+                / 'ppo_training'
+                / 'ppo_20251225_090514'  # ←ここを差し替えてください
+                / 'checkpoints'
+                / 'best_model.pth'
+            ),
+            'config_path': str(
+                fix_dir
+                / 'reinforcement_learning'
+                / 'experiments'
+                / 'ppo_training'
+                / 'ppo_20251225_090514'  # ←ここを差し替えてください
+                / 'configs'
+                / 'config.yaml'
+            ),
+            'hybrid_mode': False,
+            'severe_conditions': ['重症', '重篤', '死亡'],
+            'mild_conditions': ['軽症', '中等症'],
+        },
         'mexclp': {
             'busy_fraction': 0.3,
             'time_threshold_seconds': 780 # 13分
@@ -638,6 +643,16 @@ def aggregate_results_efficiently(results: Dict[str, List],
         threshold_13min_rates = []
         threshold_6min_severe_rates = []
         
+        # ★★★ 直近隊選択統計の収集（合計ベース） ★★★
+        total_closest_dispatches = 0
+        total_dispatches = 0
+        total_closest_severe = 0
+        total_dispatches_severe = 0
+        total_closest_mild = 0
+        total_dispatches_mild = 0
+        total_closest_other = 0
+        total_dispatches_other = 0
+        
         for idx, report in enumerate(reports):
             # 基本統計
             if 'response_times' in report and 'overall' in report['response_times']:
@@ -675,6 +690,51 @@ def aggregate_results_efficiently(results: Dict[str, List],
                             )
                     if severe_6min_rates:
                         threshold_6min_severe_rates.append(np.mean(severe_6min_rates))
+            
+            # ★★★ 直近隊選択統計の収集（合計ベース） ★★★
+            if 'dispatch_statistics' in report:
+                try:
+                    dispatch_stats = report['dispatch_statistics']
+                    if isinstance(dispatch_stats, dict):
+                        # 全体の統計を合計
+                        run_total = dispatch_stats.get('total_dispatches', 0)
+                        run_closest = dispatch_stats.get('closest_dispatches', 0)
+                        if run_total > 0:
+                            total_dispatches += run_total
+                            total_closest_dispatches += run_closest
+                        
+                        # 傷病度別統計を合計
+                        by_severity = dispatch_stats.get('by_severity', {})
+                        if isinstance(by_severity, dict):
+                            # 重症系
+                            severe_data = by_severity.get('severe', {})
+                            if isinstance(severe_data, dict):
+                                severe_total = severe_data.get('total', 0)
+                                severe_closest = severe_data.get('closest', 0)
+                                if severe_total > 0:
+                                    total_dispatches_severe += severe_total
+                                    total_closest_severe += severe_closest
+                            
+                            # 軽症系
+                            mild_data = by_severity.get('mild', {})
+                            if isinstance(mild_data, dict):
+                                mild_total = mild_data.get('total', 0)
+                                mild_closest = mild_data.get('closest', 0)
+                                if mild_total > 0:
+                                    total_dispatches_mild += mild_total
+                                    total_closest_mild += mild_closest
+                            
+                            # その他
+                            other_data = by_severity.get('other', {})
+                            if isinstance(other_data, dict):
+                                other_total = other_data.get('total', 0)
+                                other_closest = other_data.get('closest', 0)
+                                if other_total > 0:
+                                    total_dispatches_other += other_total
+                                    total_closest_other += other_closest
+                except (KeyError, TypeError, AttributeError) as e:
+                    # 統計データの読み込みエラーを無視（ログ出力はしない）
+                    pass
         
         # 統計計算（信頼区間も含む）
         aggregated[strategy] = {
@@ -716,7 +776,30 @@ def aggregate_results_efficiently(results: Dict[str, List],
                 'std': np.std(threshold_6min_severe_rates) if threshold_6min_severe_rates else 0,
                 'values': threshold_6min_severe_rates
             },
-            'sample_size': len(all_response_times)
+            'sample_size': len(all_response_times),
+            # ★★★ 直近隊選択統計（合計ベースで計算） ★★★
+            'closest_dispatch_rate': {
+                'mean': (total_closest_dispatches / total_dispatches * 100) if total_dispatches > 0 else 0.0,
+                'std': 0.0,  # 合計ベースなので標準偏差は0
+                'values': [(total_closest_dispatches / total_dispatches * 100) if total_dispatches > 0 else 0.0]
+            },
+            'closest_dispatch_rate_by_severity': {
+                'severe': {
+                    'mean': (total_closest_severe / total_dispatches_severe * 100) if total_dispatches_severe > 0 else 0.0,
+                    'std': 0.0,
+                    'values': [(total_closest_severe / total_dispatches_severe * 100) if total_dispatches_severe > 0 else 0.0]
+                },
+                'mild': {
+                    'mean': (total_closest_mild / total_dispatches_mild * 100) if total_dispatches_mild > 0 else 0.0,
+                    'std': 0.0,
+                    'values': [(total_closest_mild / total_dispatches_mild * 100) if total_dispatches_mild > 0 else 0.0]
+                },
+                'other': {
+                    'mean': (total_closest_other / total_dispatches_other * 100) if total_dispatches_other > 0 else 0.0,
+                    'std': 0.0,
+                    'values': [(total_closest_other / total_dispatches_other * 100) if total_dispatches_other > 0 else 0.0]
+                }
+            }
         }
         
         # 進捗表示
@@ -1194,7 +1277,26 @@ def create_detailed_summary_report(aggregated: Dict,
             f.write(f"   13分以内（全体）: {data['threshold_13min']['mean']:.1f} ± {data['threshold_13min']['std']:.1f} %\n")
             f.write(f"   6分以内（重症系）: {data['threshold_6min_severe']['mean']:.1f} ± {data['threshold_6min_severe']['std']:.1f} %\n\n")
             
-            f.write(f"3. サンプルサイズ\n")
+            # ★★★ 直近隊選択率の表示（合計ベース） ★★★
+            f.write(f"3. 直近隊選択率\n")
+            if 'closest_dispatch_rate' in data and data['closest_dispatch_rate']['mean'] > 0:
+                # 合計ベースなので標準偏差は表示しない
+                f.write(f"   全体: {data['closest_dispatch_rate']['mean']:.1f} %\n")
+                
+                # 傷病度別統計
+                if 'closest_dispatch_rate_by_severity' in data:
+                    by_sev = data['closest_dispatch_rate_by_severity']
+                    if by_sev.get('severe', {}).get('mean', 0) > 0:
+                        f.write(f"   重症系: {by_sev['severe']['mean']:.1f} %\n")
+                    if by_sev.get('mild', {}).get('mean', 0) > 0:
+                        f.write(f"   軽症系: {by_sev['mild']['mean']:.1f} %\n")
+                    if by_sev.get('other', {}).get('mean', 0) > 0:
+                        f.write(f"   その他: {by_sev['other']['mean']:.1f} %\n")
+            else:
+                f.write(f"   データなし\n")
+            f.write("\n")
+            
+            f.write(f"4. サンプルサイズ\n")
             f.write(f"   実行回数: {data['sample_size']}\n\n")
         
         # 統計的比較
@@ -1297,14 +1399,14 @@ if __name__ == "__main__":
     # ============================================================
     EXPERIMENT_PARAMS = {
         # 期間指定（ランダムサンプリング）
-        'start_date': "20240204",
-        'end_date': "20240511",  # 1ヶ月間
+        'start_date': "20240331",
+        'end_date': "20240406",  # 1週間
         
         # エピソード設定
         'episode_duration_hours': 24,  # 24時間エピソード
         
         # 実行回数（ランダムサンプリング）
-        'num_runs': 5,  # 各戦略100回ずつ実行
+        'num_runs': 30,  # 各戦略100回ずつ実行
         
         # 出力設定
         'output_base_dir': None,  # 自動的に絶対パスが設定されます

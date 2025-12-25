@@ -1153,6 +1153,19 @@ class ValidationSimulator:
             context=self.dispatch_context
         )
         
+        # ★★★ 直近隊選択統計を記録（全戦略共通） ★★★
+        if selected_info and hasattr(self.dispatch_strategy, '_record_dispatch_statistics'):
+            try:
+                self.dispatch_strategy._record_dispatch_statistics(
+                    selected_info,
+                    request,
+                    ambulance_infos,
+                    self.get_travel_time
+                )
+            except Exception:
+                # エラーが発生してもシミュレーションは継続
+                pass
+        
         if selected_info:
             # AmbulanceInfoからAmbulanceオブジェクトを取得
             selected_ambulance = next(
@@ -3010,6 +3023,16 @@ def run_validation_simulation(
     
     # シミュレーションの実行
     report = simulator.run(end_time=simulation_duration_hours * 3600, verbose=verbose_logging)
+    
+    # 直近隊選択統計をレポートに追加
+    if report and hasattr(simulator, 'dispatch_strategy') and simulator.dispatch_strategy:
+        try:
+            dispatch_stats = simulator.dispatch_strategy.get_dispatch_statistics()
+            if dispatch_stats:
+                report['dispatch_statistics'] = dispatch_stats
+        except Exception as e:
+            # エラーが発生してもシミュレーション結果は保存
+            pass
     
     # レポートの保存（軽量モード対応）
     if report:
