@@ -58,8 +58,8 @@ EXPERIMENT_CONFIG = {
         # 'closest_haversine',
         # 'closest_distance',
         # 'severity_based',
-        # 'advanced_severity',
-        'second_ride',
+        # # 'advanced_severity',
+        # 'second_ride',
         # 'mexclp',
         # 'ppo_agent',   # 従来PPO（ベースライン）
         # 'ppo_slot1',   # スロット1（パスを差し替えて利用）
@@ -207,7 +207,7 @@ EXPERIMENT_CONFIG = {
                 / 'reinforcement_learning'
                 / 'experiments'
                 / 'ppo_training'
-                / 'ppo_20251225_090514'  # ←ここを差し替えてください
+                / 'ppo_20251228_160623'  # ←ここを差し替えてください
                 / 'checkpoints'
                 / 'best_model.pth'
             ),
@@ -216,11 +216,11 @@ EXPERIMENT_CONFIG = {
                 / 'reinforcement_learning'
                 / 'experiments'
                 / 'ppo_training'
-                / 'ppo_20251225_090514'  # ←ここを差し替えてください
+                / 'ppo_20251228_160623'  # ←ここを差し替えてください
                 / 'configs'
                 / 'config.yaml'
             ),
-            'hybrid_mode': False,
+            'hybrid_mode': True,
             'severe_conditions': ['重症', '重篤', '死亡'],
             'mild_conditions': ['軽症', '中等症'],
         },
@@ -1399,8 +1399,8 @@ if __name__ == "__main__":
     # ============================================================
     EXPERIMENT_PARAMS = {
         # 期間指定（ランダムサンプリング）
-        'start_date': "20240331",
-        'end_date': "20240406",  # 1週間
+        'start_date': "20240505",
+        'end_date': "20240511",  # 1週間
         
         # エピソード設定
         'episode_duration_hours': 24,  # 24時間エピソード
