@@ -570,7 +570,7 @@ class SeverityBasedStrategy(DispatchStrategy):
         """カバレッジ計算用のサンプルポイントを取得"""
         try:
             # 中心から2リング以内のグリッドを取得
-            nearby_grids = h3.grid_disk(center_h3, 2)
+            nearby_grids = h3.grid_disk(center_h3, 6) # 1/6実験的変更　2 →　6
             
             # context.grid_mappingに存在するグリッドのみを使用
             valid_grids = [g for g in nearby_grids if g in context.grid_mapping]
@@ -592,7 +592,7 @@ class SeverityBasedStrategy(DispatchStrategy):
                                 ambulances: List[AmbulanceInfo],
                                 travel_time_func: callable,
                                 threshold_time: float = 600) -> int:
-        """近隣の救急車数をカウント（10分以内）"""
+        """近隣の救急車数をカウント"""
         count = 0
         for amb in ambulances:
             travel_time = travel_time_func(amb.current_h3, station_h3, 'response')

@@ -57,14 +57,14 @@ EXPERIMENT_CONFIG = {
         # 'closest',
         # 'closest_haversine',
         # 'closest_distance',
-        # 'severity_based',
+        'severity_based',
         # # 'advanced_severity',
         # 'second_ride',
         # 'mexclp',
         # 'ppo_agent',   # 従来PPO（ベースライン）
-        # 'ppo_slot1',   # スロット1（パスを差し替えて利用）
-        # 'ppo_slot2',   # スロット2
-        # 'ppo_slot3',   # スロット3
+        'ppo_slot1',   # スロット1（パスを差し替えて利用）
+        'ppo_slot2',   # スロット2
+        'ppo_slot3',   # スロット3
         'ppo_slot4', # スロット4（必要ならコメント解除）
     ],
     
@@ -79,10 +79,10 @@ EXPERIMENT_CONFIG = {
         'ppo_agent': 'PPOエージェント（ベースライン）',
         'mexclp': 'MEXCLP運用',
         # ↓ PPOスロット用の表示名
-        'ppo_slot1': 'PPOエージェント（スロット1）',
-        'ppo_slot2': 'PPOエージェント（スロット2）',
-        'ppo_slot3': 'PPOエージェント（スロット3）',
-        'ppo_slot4': 'PPOエージェント（スロット4）',
+        'ppo_slot1': 'PPOエージェント（hyppo-123342）',
+        'ppo_slot2': 'PPOエージェント（hyppo-100443）',
+        'ppo_slot3': 'PPOエージェント（hyppo-230154）',
+        'ppo_slot4': 'PPOエージェント（hyppo-153526）',
     },
     
     # 各戦略の色設定
@@ -137,7 +137,7 @@ EXPERIMENT_CONFIG = {
                 / 'reinforcement_learning'
                 / 'experiments'
                 / 'ppo_training'
-                / 'ppo_20251210_212341'  # ←ここを差し替えてください
+                / 'ppo_20260101_123342'  # ←ここを差し替えてください
                 / 'checkpoints'
                 / 'best_model.pth'
             ),
@@ -146,11 +146,11 @@ EXPERIMENT_CONFIG = {
                 / 'reinforcement_learning'
                 / 'experiments'
                 / 'ppo_training'
-                / 'ppo_20251210_212341'  # ←ここを差し替えてください
+                / 'ppo_20260101_123342'  # ←ここを差し替えてください
                 / 'configs'
                 / 'config.yaml'
             ),
-            'hybrid_mode': True,
+            'hybrid_mode': False,
             'severe_conditions': ['重症', '重篤', '死亡'],
             'mild_conditions': ['軽症', '中等症'],
         },
@@ -160,7 +160,7 @@ EXPERIMENT_CONFIG = {
                 / 'reinforcement_learning'
                 / 'experiments'
                 / 'ppo_training'
-                / 'ppo_20251216_143056'  # ←ここを差し替えてください
+                / 'ppo_20260102_100443'  # ←ここを差し替えてください
                 / 'checkpoints'
                 / 'best_model.pth'
             ),
@@ -169,7 +169,7 @@ EXPERIMENT_CONFIG = {
                 / 'reinforcement_learning'
                 / 'experiments'
                 / 'ppo_training'
-                / 'ppo_20251216_143056'  # ←ここを差し替えてください
+                / 'ppo_20260102_100443'  # ←ここを差し替えてください
                 / 'configs'
                 / 'config.yaml'
             ),
@@ -183,7 +183,7 @@ EXPERIMENT_CONFIG = {
                 / 'reinforcement_learning'
                 / 'experiments'
                 / 'ppo_training'
-                / 'ppo_20251202_161021'  # ←ここを差し替えてください
+                / 'ppo_20260102_230154'  # ←ここを差し替えてください
                 / 'checkpoints'
                 / 'best_model.pth'
             ),
@@ -192,7 +192,7 @@ EXPERIMENT_CONFIG = {
                 / 'reinforcement_learning'
                 / 'experiments'
                 / 'ppo_training'
-                / 'ppo_20251202_161021'  # ←ここを差し替えてください
+                / 'ppo_20260102_230154'  # ←ここを差し替えてください
                 / 'configs'
                 / 'config.yaml'
             ),
@@ -207,7 +207,7 @@ EXPERIMENT_CONFIG = {
                 / 'reinforcement_learning'
                 / 'experiments'
                 / 'ppo_training'
-                / 'ppo_20251228_160623'  # ←ここを差し替えてください
+                / 'ppo_20260103_153526'  # ←ここを差し替えてください
                 / 'checkpoints'
                 / 'best_model.pth'
             ),
@@ -216,7 +216,7 @@ EXPERIMENT_CONFIG = {
                 / 'reinforcement_learning'
                 / 'experiments'
                 / 'ppo_training'
-                / 'ppo_20251228_160623'  # ←ここを差し替えてください
+                / 'ppo_20260103_153526'  # ←ここを差し替えてください
                 / 'configs'
                 / 'config.yaml'
             ),
@@ -1399,14 +1399,14 @@ if __name__ == "__main__":
     # ============================================================
     EXPERIMENT_PARAMS = {
         # 期間指定（ランダムサンプリング）
-        'start_date': "20240505",
-        'end_date': "20240511",  # 1週間
+        'start_date': "20241222",
+        'end_date': "20241228",  # 1週間
         
         # エピソード設定
         'episode_duration_hours': 24,  # 24時間エピソード
         
         # 実行回数（ランダムサンプリング）
-        'num_runs': 30,  # 各戦略100回ずつ実行
+        'num_runs': 100,  # 各戦略100回ずつ実行
         
         # 出力設定
         'output_base_dir': None,  # 自動的に絶対パスが設定されます

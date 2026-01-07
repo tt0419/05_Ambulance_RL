@@ -486,6 +486,23 @@ class CompactStateEncoder:
         coverage_config = config.get('coverage_params', {})
         self.coverage_time_threshold = coverage_config.get('time_threshold_seconds', 600)
         
+        # ★★★ カバレッジ考慮型ソート設定（解決策1）★★★
+        encoding_config = config.get('state_encoding', {})
+        sorting_config = encoding_config.get('coverage_aware_sorting', {})
+        self.coverage_aware_sorting = sorting_config.get('enabled', False)
+        # デフォルト値を設定（無効時も使用される可能性があるため）
+        self.sorting_time_weight = sorting_config.get('time_weight', 0.6)
+        self.sorting_coverage_weight = sorting_config.get('coverage_weight', 0.4)
+        self.coverage_sample_size = sorting_config.get('sample_size', 20)
+        self.coverage_sample_radius = sorting_config.get('sample_radius', 2)
+        # ★★★ 最適化設定 ★★★
+        self.pre_filter_size = sorting_config.get('pre_filter_size', 30)  # 事前フィルタリング数（案1）
+        self.use_adaptive_sampling = sorting_config.get('use_adaptive_sampling', True)  # 動的サンプリング（案2）
+        self.max_candidates_for_advanced = sorting_config.get('max_candidates_for_advanced', 50)  # 高度計算の最大候補数（案3）
+        if self.coverage_aware_sorting:
+            print(f"  カバレッジ考慮型ソート有効: time_weight={self.sorting_time_weight}, coverage_weight={self.sorting_coverage_weight}")
+            print(f"  最適化設定: pre_filter={self.pre_filter_size}, adaptive_sampling={self.use_adaptive_sampling}, max_advanced={self.max_candidates_for_advanced}")
+        
         # 傷病度判定用の定数をインポート
         self.severe_conditions = ['重症', '重篤', '死亡']
         self.mild_conditions = ['軽症', '中等症']
@@ -628,19 +645,75 @@ class CompactStateEncoder:
                 'station_distance_normalized': min(station_distance_km / self.max_station_distance_km, 1.0)
             })
         
-        # 移動時間順にソート
-        candidates.sort(key=lambda x: x['travel_time_seconds'])
+        # ★★★ カバレッジ考慮型ソート（解決策1 + 最適化）★★★
+        if self.coverage_aware_sorting:
+            # ★★★ 最適化案1: 段階的計算 ★★★
+            # まず移動時間で上位候補を絞り込み
+            candidates.sort(key=lambda x: x['travel_time_seconds'])
+            pre_filtered = candidates[:min(self.pre_filter_size, len(candidates))]
+            
+            # ★★★ 最適化案3: 候補数が多い場合は簡易計算にフォールバック ★★★
+            use_advanced_calculation = len(candidates) <= self.max_candidates_for_advanced
+            
+            # 絞り込んだ候補に対してカバレッジ損失を計算
+            for cand in pre_filtered:
+                if use_advanced_calculation:
+                    # ★★★ 最適化案2: 動的サンプリング ★★★
+                    # 候補数に応じてサンプル数を調整
+                    if self.use_adaptive_sampling:
+                        if len(candidates) > 100:
+                            sample_size = 5
+                        elif len(candidates) > 50:
+                            sample_size = 10
+                        else:
+                            sample_size = self.coverage_sample_size
+                    else:
+                        sample_size = self.coverage_sample_size
+                    
+                    cand['coverage_loss'] = self._calculate_coverage_loss_advanced(
+                        cand['amb_id'],
+                        ambulances,
+                        available_amb_ids,
+                        grid_mapping,
+                        sample_size=sample_size
+                    )
+                else:
+                    # 候補数が多い場合は簡易計算を使用
+                    cand['coverage_loss'] = self._calculate_coverage_loss_simple(
+                        cand['amb_id'],
+                        ambulances,
+                        available_amb_ids
+                    )
+            
+            # 移動時間とカバレッジ損失の複合スコアでソート
+            for cand in pre_filtered:
+                # スコア = 移動時間正規化値 × time_weight + カバレッジ損失 × coverage_weight
+                # スコアが小さいほど良い（移動時間が短く、カバレッジ損失が小さい）
+                cand['sort_score'] = (
+                    cand['travel_time_normalized'] * self.sorting_time_weight +
+                    cand['coverage_loss'] * self.sorting_coverage_weight
+                )
+            
+            pre_filtered.sort(key=lambda x: x['sort_score'])
+            
+            # ソート済みの候補を先頭に、残りを移動時間順で結合
+            remaining = candidates[self.pre_filter_size:]
+            candidates = pre_filtered + remaining
+        else:
+            # 従来の移動時間順ソート
+            candidates.sort(key=lambda x: x['travel_time_seconds'])
         
         # Top-Kを取得
         top_k_candidates = candidates[:self.top_k]
         
-        # カバレッジ損失を計算（Top-Kのみ）
+        # カバレッジ損失を計算（カバレッジ考慮型ソートでは既に計算済み）
         for cand in top_k_candidates:
-            cand['coverage_loss'] = self._calculate_coverage_loss_simple(
-                cand['amb_id'], 
-                ambulances, 
-                available_amb_ids
-            )
+            if 'coverage_loss' not in cand or cand.get('coverage_loss', 0.0) == 0.0:
+                cand['coverage_loss'] = self._calculate_coverage_loss_simple(
+                    cand['amb_id'], 
+                    ambulances, 
+                    available_amb_ids
+                )
         
         # Top-Kに満たない場合はダミーで埋める
         while len(top_k_candidates) < self.top_k:
@@ -746,6 +819,185 @@ class CompactStateEncoder:
         
         except Exception as e:
             return 0.5
+    
+    def _calculate_coverage_loss_advanced(self,
+                                         amb_id: int,
+                                         ambulances: Dict,
+                                         available_amb_ids: List[int],
+                                         grid_mapping: Dict,
+                                         sample_size: Optional[int] = None) -> float:
+        """
+        高度なカバレッジ損失計算（SeverityBasedStrategyと同様のロジック）
+        
+        6分カバレッジと13分カバレッジの変化を計算し、重み付け合成
+        
+        Args:
+            amb_id: 対象の救急車ID
+            ambulances: 全救急車の状態辞書
+            available_amb_ids: 利用可能な救急車IDリスト
+            grid_mapping: H3→インデックスのマッピング
+        
+        Returns:
+            float: 0-1の範囲のカバレッジ損失（高いほど損失大）
+        """
+        try:
+            amb_state = ambulances.get(amb_id)
+            if not amb_state:
+                return 0.5
+            
+            # ステーション位置を取得（なければ現在位置を使用）
+            station_h3 = amb_state.get('station_h3') or amb_state.get('current_h3')
+            if not station_h3 or not grid_mapping or station_h3 not in grid_mapping:
+                return 0.5
+            
+            if self.travel_time_matrix is None:
+                return 0.5
+            
+            # その救急車を除いた利用可能な救急車リスト
+            remaining_amb_ids = [aid for aid in available_amb_ids if aid != amb_id]
+            if not remaining_amb_ids:
+                return 1.0  # 他に救急車がない場合は最大損失
+            
+            # サンプルポイントを取得（動的サンプリング対応）
+            actual_sample_size = sample_size if sample_size is not None else self.coverage_sample_size
+            sample_points = self._get_coverage_sample_points(station_h3, grid_mapping, actual_sample_size)
+            
+            if not sample_points:
+                # サンプルポイントが取得できない場合は簡易計算にフォールバック
+                return self._calculate_coverage_loss_simple(amb_id, ambulances, available_amb_ids)
+            
+            # 6分・13分カバレッジへの影響を計算
+            coverage_6min_before = 0
+            coverage_13min_before = 0
+            coverage_6min_after = 0
+            coverage_13min_after = 0
+            
+            time_threshold_6min = 360  # 6分
+            time_threshold_13min = 780  # 13分
+            
+            for point_h3 in sample_points:
+                if point_h3 not in grid_mapping:
+                    continue
+                
+                point_grid_idx = grid_mapping[point_h3]
+                
+                # 現在の状態でのカバレッジ（全利用可能救急車）
+                min_time_before = self._get_min_response_time_for_coverage(
+                    point_grid_idx, available_amb_ids, ambulances, grid_mapping
+                )
+                if min_time_before <= time_threshold_6min:
+                    coverage_6min_before += 1
+                if min_time_before <= time_threshold_13min:
+                    coverage_13min_before += 1
+                
+                # 救急車が出動した後のカバレッジ
+                min_time_after = self._get_min_response_time_for_coverage(
+                    point_grid_idx, remaining_amb_ids, ambulances, grid_mapping
+                )
+                if min_time_after <= time_threshold_6min:
+                    coverage_6min_after += 1
+                if min_time_after <= time_threshold_13min:
+                    coverage_13min_after += 1
+            
+            # カバレッジ率の変化を計算
+            total_points = len(sample_points)
+            if total_points == 0:
+                return 0.5  # デフォルト値
+            
+            # 6分カバレッジと13分カバレッジの損失を重み付け合成
+            loss_6min = (coverage_6min_before - coverage_6min_after) / total_points
+            loss_13min = (coverage_13min_before - coverage_13min_after) / total_points
+            
+            # 6分カバレッジと13分カバレッジの損失を等価に重み付け（SeverityBasedStrategyと同じ）
+            combined_loss = loss_6min * 0.5 + loss_13min * 0.5
+            
+            # 0-1の範囲にクリップ
+            return max(0.0, min(1.0, combined_loss))
+        
+        except Exception as e:
+            # エラー時は簡易計算にフォールバック
+            return self._calculate_coverage_loss_simple(amb_id, ambulances, available_amb_ids)
+    
+    def _get_coverage_sample_points(self,
+                                   center_h3: str,
+                                   grid_mapping: Dict,
+                                   sample_size: int = 20) -> List[str]:
+        """
+        カバレッジ計算用のサンプルポイントを取得
+        
+        SeverityBasedStrategyと同様のロジック
+        """
+        try:
+            import h3
+            # 中心から2リング以内のグリッドを取得
+            nearby_grids = h3.grid_disk(center_h3, self.coverage_sample_radius)
+            
+            # grid_mappingに存在するグリッドのみを使用
+            valid_grids = [g for g in nearby_grids if g in grid_mapping]
+            
+            # サンプルサイズを調整
+            if len(valid_grids) <= sample_size:
+                return valid_grids
+            
+            # ランダムサンプリング
+            import random
+            return random.sample(valid_grids, sample_size)
+            
+        except Exception:
+            # エラーの場合は空リストを返す
+            return []
+    
+    def _get_min_response_time_for_coverage(self,
+                                           target_grid_idx: int,
+                                           ambulance_ids: List[int],
+                                           ambulances: Dict,
+                                           grid_mapping: Dict) -> float:
+        """
+        指定地点への最小応答時間を取得（カバレッジ計算用、最適化版）
+        
+        Args:
+            target_grid_idx: 目標地点のグリッドインデックス
+            ambulance_ids: 考慮する救急車IDリスト
+            ambulances: 全救急車の状態辞書
+            grid_mapping: H3→インデックスのマッピング
+        
+        Returns:
+            float: 最小応答時間（秒）
+        """
+        if not ambulance_ids or self.travel_time_matrix is None:
+            return float('inf')
+        
+        # ★★★ 最適化: 救急車のグリッドインデックスを事前に取得 ★★★
+        amb_grid_indices = []
+        for amb_id in ambulance_ids:
+            amb_state = ambulances.get(amb_id)
+            if not amb_state:
+                continue
+            
+            amb_h3 = amb_state.get('current_h3')
+            if amb_h3 and amb_h3 in grid_mapping:
+                amb_grid_indices.append(grid_mapping[amb_h3])
+        
+        if not amb_grid_indices:
+            return 1800  # デフォルト30分
+        
+        try:
+            # ★★★ 最適化: numpy配列演算で一括計算 ★★★
+            # 全救急車から目標地点への移動時間を一括取得
+            travel_times = self.travel_time_matrix[np.array(amb_grid_indices), target_grid_idx]
+            min_time = np.min(travel_times)
+            return float(min_time) if min_time < float('inf') else 1800
+        except (IndexError, KeyError, ValueError):
+            # フォールバック: 個別計算
+            min_time = float('inf')
+            for amb_grid_idx in amb_grid_indices:
+                try:
+                    travel_time = self.travel_time_matrix[amb_grid_idx, target_grid_idx]
+                    if travel_time < min_time:
+                        min_time = travel_time
+                except (IndexError, KeyError):
+                    continue
+            return min_time if min_time != float('inf') else 1800
     
     def _calculate_coverage_rate(self, ambulances: Dict, grid_mapping: Dict) -> float:
         """現在のカバレッジ率を計算"""
